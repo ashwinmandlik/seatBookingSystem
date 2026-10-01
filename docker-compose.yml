@@ -1,0 +1,14 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: seatreserve
+      POSTGRES_USER: seatreserve
+      POSTGRES_PASSWORD: seatreserve
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U seatreserve -d seatreserve"]
+      interval: 2s
+      timeout: 3s
+      retries: 20

@@ -1,0 +1,22 @@
+spring:
+  application:
+    name: seat-reserve
+  threads:
+    virtual:
+      enabled: true
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/seatreserve}
+    username: ${DATABASE_USERNAME:seatreserve}
+    password: ${DATABASE_PASSWORD:seatreserve}
+    hikari:
+      # The pool is the backpressure valve: at most this many transactions
+      # touch Postgres at once; the rest queue in-process instead of
+      # overwhelming the database.
+      maximum-pool-size: ${DB_POOL_SIZE:20}
+      connection-timeout: ${DB_CONNECTION_TIMEOUT_MS:30000}
+  flyway:
+    enabled: true
+
+server:
+  port: ${PORT:8080}
+  shutdown: graceful
