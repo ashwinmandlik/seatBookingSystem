@@ -25,4 +25,4 @@ seatreserve:
   # How long a hold (reserve with "hold": true) lasts before it expires and
   # the seat returns to available. Each seat stores its own deadline
   # (seats.held_until = now() + this TTL).
-  hold-ttl: ${HOLD_TTL_SECONDS:300s}
+  hold-ttl-seconds: ${HOLD_TTL_SECONDS:300}
