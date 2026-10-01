@@ -9,6 +9,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -44,6 +45,24 @@ public class ReservationController {
         return ResponseEntity.status(result.replayed() ? HttpStatus.OK : HttpStatus.CREATED)
                 .header(REPLAYED_HEADER, String.valueOf(result.replayed()))
                 .body(ReservationResponse.of(result.reservation()));
+    }
+
+    /** Owner only; anyone else gets 404, so reservation ids cannot be probed. */
+    @GetMapping("/reservations/{reservationId}")
+    public ReservationResponse get(@PathVariable UUID reservationId, @AuthenticationPrincipal Jwt principal) {
+        return ReservationResponse.of(service.get(reservationId, principal.getSubject()));
+    }
+
+    /** Turns a hold into a sale. Idempotent: confirming twice returns the same reservation. */
+    @PostMapping("/reservations/{reservationId}/confirm")
+    public ReservationResponse confirm(@PathVariable UUID reservationId, @AuthenticationPrincipal Jwt principal) {
+        return ReservationResponse.of(service.confirm(reservationId, principal.getSubject()));
+    }
+
+    /** Owner only. Idempotent: cancelling twice returns the cancelled reservation. */
+    @PostMapping("/reservations/{reservationId}/cancel")
+    public ReservationResponse cancel(@PathVariable UUID reservationId, @AuthenticationPrincipal Jwt principal) {
+        return ReservationResponse.of(service.cancel(reservationId, principal.getSubject()));
     }
 
     /** The key may arrive in the header or the body; if both, they must agree. */

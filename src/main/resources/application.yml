@@ -34,3 +34,7 @@ seatreserve:
   # Defaults are for local development only; production sets real secrets.
   jwt-secret: ${JWT_SECRET:local-dev-secret-change-me-0123456789abcdef}
   admin-key: ${ADMIN_KEY:local-admin-key}
+  sweeper:
+    # Every instance runs the sweeper; SKIP LOCKED splits the work safely.
+    enabled: ${HOLD_SWEEPER_ENABLED:true}
+    interval-ms: ${HOLD_SWEEP_INTERVAL_MS:1000}

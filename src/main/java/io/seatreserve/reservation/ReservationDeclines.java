@@ -4,6 +4,7 @@ import io.seatreserve.common.error.DomainException;
 import io.seatreserve.common.error.ErrorCode;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import org.springframework.http.HttpStatus;
 
 /** The clean, expected ways a reservation request can be turned away. */
@@ -33,6 +34,30 @@ public final class ReservationDeclines {
         public IdempotencyKeyReused() {
             super(HttpStatus.CONFLICT, ErrorCode.IDEMPOTENCY_KEY_REUSED,
                     "Idempotency key was already used with a different request");
+        }
+    }
+
+    /**
+     * Also used when the reservation exists but belongs to someone else: telling
+     * a caller "not yours" would confirm that the id exists.
+     */
+    public static class ReservationNotFound extends DomainException {
+        public ReservationNotFound(UUID id) {
+            super(HttpStatus.NOT_FOUND, ErrorCode.RESERVATION_NOT_FOUND, "Reservation " + id + " not found");
+        }
+    }
+
+    /** The reservation is already cancelled or expired; its seats may belong to someone else now. */
+    public static class ReservationNotActive extends DomainException {
+        public ReservationNotActive(UUID id, ReservationStatus status) {
+            super(HttpStatus.CONFLICT, ErrorCode.RESERVATION_NOT_ACTIVE,
+                    "Reservation " + id + " is " + status.json(), Map.of("status", status.json()));
+        }
+    }
+
+    public static class HoldExpired extends DomainException {
+        public HoldExpired(UUID id) {
+            super(HttpStatus.CONFLICT, ErrorCode.HOLD_EXPIRED, "Hold " + id + " expired before it was confirmed");
         }
     }
 

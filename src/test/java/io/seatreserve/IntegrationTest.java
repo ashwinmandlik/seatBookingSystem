@@ -32,5 +32,7 @@ public abstract class IntegrationTest {
         registry.add("spring.datasource.password", () -> "postgres");
         // Large enough that concurrency tests contend on row locks, not on the pool.
         registry.add("spring.datasource.hikari.maximum-pool-size", () -> "50");
+        // Tests drive expiry explicitly (and from many threads) for determinism.
+        registry.add("seatreserve.sweeper.enabled", () -> "false");
     }
 }

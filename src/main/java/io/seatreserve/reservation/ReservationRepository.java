@@ -52,6 +52,52 @@ public class ReservationRepository {
         return jdbc.sql("SELECT * FROM reservations WHERE id = ?").param(id).query(RESERVATION).optional();
     }
 
+    /** First lock in every lifecycle transaction (confirm, cancel). */
+    public Optional<Reservation> lockById(UUID id) {
+        return jdbc.sql("SELECT * FROM reservations WHERE id = ? FOR UPDATE").param(id).query(RESERVATION).optional();
+    }
+
+    /**
+     * Claims the oldest expired hold for this transaction. SKIP LOCKED lets any
+     * number of sweepers (one per app instance) run at once: each skips holds
+     * another sweeper, a confirm or a cancel is working on, so no hold is
+     * processed twice and nobody waits.
+     */
+    public Optional<Reservation> lockNextExpired() {
+        return jdbc.sql("""
+                        SELECT * FROM reservations
+                        WHERE status = 'HELD' AND expires_at <= now()
+                        ORDER BY expires_at
+                        LIMIT 1
+                        FOR UPDATE SKIP LOCKED
+                        """)
+                .query(RESERVATION)
+                .optional();
+    }
+
+    /**
+     * HELD -> CONFIRMED, only while the hold is still live. now() is the
+     * transaction start, i.e. when the confirm request began, so a request that
+     * arrived before the deadline is honoured even if it waited on a lock.
+     */
+    public Optional<Reservation> confirmIfLive(UUID id) {
+        return jdbc.sql("""
+                        UPDATE reservations SET status = 'CONFIRMED', updated_at = now()
+                        WHERE id = ? AND status = 'HELD' AND expires_at > now()
+                        RETURNING *
+                        """)
+                .param(id)
+                .query(RESERVATION)
+                .optional();
+    }
+
+    public Reservation updateStatus(UUID id, ReservationStatus status) {
+        return jdbc.sql("UPDATE reservations SET status = ?, updated_at = now() WHERE id = ? RETURNING *")
+                .params(status.name(), id)
+                .query(RESERVATION)
+                .single();
+    }
+
     private static List<String> strings(Array array) throws SQLException {
         return List.of((String[]) array.getArray());
     }

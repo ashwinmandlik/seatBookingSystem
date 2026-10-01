@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.seatreserve.IntegrationTest;
+import io.seatreserve.Invariants;
 import io.seatreserve.reservation.ReservationDeclines.IdempotencyKeyReused;
 import io.seatreserve.reservation.ReservationDeclines.PerUserLimitExceeded;
 import io.seatreserve.reservation.ReservationDeclines.SeatsUnavailable;
@@ -15,10 +16,8 @@ import io.seatreserve.show.ShowService;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Callable;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -113,6 +112,18 @@ class ReservationConcurrencyTest extends IntegrationTest {
 
         assertThat(bob.replayed()).isFalse();
         assertThat(bob.reservation().userId()).isEqualTo("bob");
+    }
+
+    @Test
+    void sameKeyOnAnotherShowIsIndependent() {
+        UUID first = createShow(10, 4);
+        UUID second = createShow(10, 4);
+        service.reserve(new ReserveCommand(first, "u", List.of("A1"), false, "k"));
+
+        ReserveResult other = service.reserve(new ReserveCommand(second, "u", List.of("A1"), false, "k"));
+
+        assertThat(other.replayed()).isFalse();
+        assertThat(other.reservation().showId()).isEqualTo(second);
     }
 
     @Test
@@ -250,13 +261,6 @@ class ReservationConcurrencyTest extends IntegrationTest {
     private void assertReconciles(UUID show, int available, int held, int confirmed) {
         SeatCounts counts = shows.get(show).counts();
         assertThat(counts).isEqualTo(new SeatCounts(available, held, confirmed, available + held + confirmed));
-        // The quota table must agree with the seats table, user by user.
-        Map<String, Integer> quota = new ConcurrentHashMap<>();
-        jdbc.sql("SELECT user_id, held_count FROM user_show_quota WHERE show_id = ? AND held_count > 0")
-                .param(show).query((rs, i) -> quota.put(rs.getString(1), rs.getInt(2))).list();
-        Map<String, Integer> owned = new ConcurrentHashMap<>();
-        jdbc.sql("SELECT user_id, count(*) FROM seats WHERE show_id = ? AND user_id IS NOT NULL GROUP BY user_id")
-                .param(show).query((rs, i) -> owned.put(rs.getString(1), rs.getInt(2))).list();
-        assertThat(quota).isEqualTo(owned);
+        Invariants.assertConsistent(jdbc, show);
     }
 }

@@ -1,5 +1,6 @@
 package io.seatreserve.reservation;
 
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -82,6 +83,38 @@ class ReservationApiTest extends IntegrationTest {
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.status").value("held"))
                 .andExpect(jsonPath("$.expires_at").isNotEmpty());
+    }
+
+    @Test
+    void holdConfirmCancelOverHttp() throws Exception {
+        String id = json.readTree(mvc.perform(reserve("alice", "{\"seats\":[\"A1\"],\"hold\":true}"))
+                .andReturn().getResponse().getContentAsString()).get("reservation_id").asText();
+
+        mvc.perform(post("/reservations/" + id + "/confirm").header("Authorization", token("alice", false)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("confirmed"));
+        mvc.perform(get("/reservations/" + id).header("Authorization", token("alice", false)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("confirmed"));
+        mvc.perform(post("/reservations/" + id + "/cancel").header("Authorization", token("alice", false)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("cancelled"));
+        mvc.perform(get("/shows/" + showId))
+                .andExpect(jsonPath("$.counts.available").value(3));
+    }
+
+    @Test
+    void someoneElsesReservationLooksNonexistent() throws Exception {
+        String id = json.readTree(mvc.perform(reserve("alice", "{\"seats\":[\"A1\"]}"))
+                .andReturn().getResponse().getContentAsString()).get("reservation_id").asText();
+
+        mvc.perform(post("/reservations/" + id + "/cancel").header("Authorization", token("mallory", false)))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("RESERVATION_NOT_FOUND"));
+        mvc.perform(get("/reservations/" + id).header("Authorization", token("mallory", false)))
+                .andExpect(status().isNotFound());
+        mvc.perform(post("/reservations/" + id + "/cancel")).andExpect(status().isUnauthorized());
+        mvc.perform(get("/shows/" + showId)).andExpect(jsonPath("$.counts.confirmed").value(1));
     }
 
     @Test

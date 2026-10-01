@@ -1,8 +1,11 @@
 package io.seatreserve.reservation;
 
 import io.seatreserve.config.SeatReserveProperties;
+import io.seatreserve.reservation.ReservationDeclines.HoldExpired;
 import io.seatreserve.reservation.ReservationDeclines.IdempotencyKeyReused;
 import io.seatreserve.reservation.ReservationDeclines.PerUserLimitExceeded;
+import io.seatreserve.reservation.ReservationDeclines.ReservationNotActive;
+import io.seatreserve.reservation.ReservationDeclines.ReservationNotFound;
 import io.seatreserve.reservation.ReservationDeclines.SeatsUnavailable;
 import io.seatreserve.reservation.ReservationDeclines.UnknownSeats;
 import io.seatreserve.reservation.SeatInventory.LockedSeat;
@@ -22,7 +25,7 @@ import org.springframework.transaction.annotation.Transactional;
  * and deadlock-free:
  *
  * <pre>
- *   1. idempotency key  (user, key)      INSERT .. ON CONFLICT
+ *   1. idempotency key  (user, show, key) INSERT .. ON CONFLICT
  *   2. quota row        (show, user)     conditional upsert
  *   3. seat rows        (show, label)    SELECT .. ORDER BY label FOR UPDATE
  * </pre>
@@ -42,15 +45,18 @@ public class ReservationService {
     private final QuotaRepository quotas;
     private final SeatInventory seats;
     private final ReservationRepository reservations;
+    private final SeatReleaser releaser;
     private final SeatReserveProperties props;
 
     public ReservationService(ShowService shows, IdempotencyRepository idempotency, QuotaRepository quotas,
-                              SeatInventory seats, ReservationRepository reservations, SeatReserveProperties props) {
+                              SeatInventory seats, ReservationRepository reservations, SeatReleaser releaser,
+                              SeatReserveProperties props) {
         this.shows = shows;
         this.idempotency = idempotency;
         this.quotas = quotas;
         this.seats = seats;
         this.reservations = reservations;
+        this.releaser = releaser;
         this.props = props;
     }
 
@@ -62,7 +68,7 @@ public class ReservationService {
 
         // 1. Idempotency: claim the key, or replay whatever it already produced.
         if (cmd.idempotencyKey() != null
-                && !idempotency.claim(cmd.userId(), cmd.idempotencyKey(), cmd.fingerprint(), show.id(), reservationId)) {
+                && !idempotency.claim(cmd.userId(), show.id(), cmd.idempotencyKey(), cmd.fingerprint(), reservationId)) {
             return replay(cmd);
         }
 
@@ -98,10 +104,67 @@ public class ReservationService {
         return new ReserveResult(reservation, false);
     }
 
+    public Reservation get(UUID reservationId, String userId) {
+        return reservations.findById(reservationId)
+                .filter(r -> r.userId().equals(userId))
+                .orElseThrow(() -> new ReservationNotFound(reservationId));
+    }
+
+    /**
+     * HELD -> CONFIRMED. Lock order: reservation -> seats. Confirming an
+     * already-confirmed reservation is a no-op success, so clients can retry.
+     */
+    @Transactional
+    public Reservation confirm(UUID reservationId, String userId) {
+        Reservation r = lockOwnedBy(reservationId, userId);
+        return switch (r.status()) {
+            case CONFIRMED -> r;
+            case EXPIRED -> throw new HoldExpired(reservationId);
+            case CANCELLED -> throw new ReservationNotActive(reservationId, r.status());
+            case HELD -> {
+                // Empty if past its deadline but not yet swept; the sweeper releases it.
+                Reservation confirmed = reservations.confirmIfLive(reservationId)
+                        .orElseThrow(() -> new HoldExpired(reservationId));
+                int count = r.seats().size();
+                int locked = seats.lockOwned(r.showId(), reservationId);
+                int changed = seats.confirmHeld(r.showId(), reservationId);
+                if (locked != count || changed != count) {
+                    throw new IllegalStateException("Hold " + reservationId + " confirmed " + changed + " of " + count);
+                }
+                yield confirmed;
+            }
+        };
+    }
+
+    /**
+     * HELD or CONFIRMED -> CANCELLED; seats become re-bookable and the user's
+     * quota is returned. Lock order: reservation -> quota -> seats. Cancelling
+     * twice is a no-op success. An expired reservation cannot be cancelled: its
+     * seats were already released and may now belong to someone else.
+     */
+    @Transactional
+    public Reservation cancel(UUID reservationId, String userId) {
+        Reservation r = lockOwnedBy(reservationId, userId);
+        return switch (r.status()) {
+            case CANCELLED -> r;
+            case EXPIRED -> throw new ReservationNotActive(reservationId, r.status());
+            case HELD, CONFIRMED -> {
+                releaser.release(r);
+                yield reservations.updateStatus(reservationId, ReservationStatus.CANCELLED);
+            }
+        };
+    }
+
+    private Reservation lockOwnedBy(UUID reservationId, String userId) {
+        return reservations.lockById(reservationId)
+                .filter(r -> r.userId().equals(userId))
+                .orElseThrow(() -> new ReservationNotFound(reservationId));
+    }
+
     private ReserveResult replay(ReserveCommand cmd) {
         // The conflicting insert waited for the other transaction to commit, so
         // this read (a new statement under READ COMMITTED) sees its row.
-        IdempotencyRepository.StoredKey stored = idempotency.find(cmd.userId(), cmd.idempotencyKey())
+        IdempotencyRepository.StoredKey stored = idempotency.find(cmd.userId(), cmd.showId(), cmd.idempotencyKey())
                 .orElseThrow(() -> new IllegalStateException("Idempotency key vanished after conflict"));
         if (!stored.requestHash().equals(cmd.fingerprint())) {
             throw new IdempotencyKeyReused();
