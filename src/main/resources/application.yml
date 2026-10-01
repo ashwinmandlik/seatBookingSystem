@@ -13,7 +13,10 @@ spring:
       # touch Postgres at once; the rest queue in-process instead of
       # overwhelming the database.
       maximum-pool-size: ${DB_POOL_SIZE:20}
-      connection-timeout: ${DB_CONNECTION_TIMEOUT_MS:30000}
+      # Under a burst, waiting for a connection is better than failing: a
+      # request that waits succeeds or gets a clean 4xx; one that times out
+      # becomes a 503.
+      connection-timeout: ${DB_CONNECTION_TIMEOUT_MS:60000}
   flyway:
     enabled: true
   jackson:
@@ -25,6 +28,11 @@ spring:
 server:
   port: ${PORT:8080}
   shutdown: graceful
+  tomcat:
+    # Requests run on virtual threads, so open connections are cheap; accept
+    # a whole on-sale burst instead of refusing sockets at the door.
+    max-connections: ${SERVER_MAX_CONNECTIONS:20000}
+    accept-count: ${SERVER_ACCEPT_COUNT:2000}
 
 seatreserve:
   # How long a hold (reserve with "hold": true) lasts before it expires and
@@ -38,3 +46,8 @@ seatreserve:
     # Every instance runs the sweeper; SKIP LOCKED splits the work safely.
     enabled: ${HOLD_SWEEPER_ENABLED:true}
     interval-ms: ${HOLD_SWEEP_INTERVAL_MS:1000}
+  hot-seats:
+    # In-memory fast-fail for contended seats. Only ever declines; the
+    # database still makes every decision to sell.
+    enabled: ${HOT_SEATS_ENABLED:true}
+    cache-ttl-millis: ${HOT_SEATS_CACHE_TTL_MS:2000}

@@ -1,5 +1,6 @@
 package io.seatreserve.reservation;
 
+import io.seatreserve.common.db.TransactionRunner;
 import io.seatreserve.config.SeatReserveProperties;
 import io.seatreserve.reservation.ReservationDeclines.HoldExpired;
 import io.seatreserve.reservation.ReservationDeclines.IdempotencyKeyReused;
@@ -12,22 +13,29 @@ import io.seatreserve.reservation.SeatInventory.LockedSeat;
 import io.seatreserve.show.SeatStatus;
 import io.seatreserve.show.Show;
 import io.seatreserve.show.ShowService;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Decides who gets a seat. Every write runs in one READ COMMITTED transaction
- * and takes locks in one global order, which is what makes it both race-free
- * and deadlock-free:
+ * Decides who gets a seat.
+ *
+ * <p>A reserve request passes through cheap in-memory layers first, then one
+ * database transaction that makes the actual decision:
  *
  * <pre>
- *   1. idempotency key  (user, show, key) INSERT .. ON CONFLICT
- *   2. quota row        (show, user)     conditional upsert
- *   3. seat rows        (show, label)    SELECT .. ORDER BY label FOR UPDATE
+ *   fast-fail   seat known taken by someone else?   -> 409, no database   (HotSeatGate)
+ *   gate        wait in memory per seat, not on a row lock holding a connection
+ *   retry       transient database failures re-run the whole transaction
+ *   transaction READ COMMITTED, locks in one global order:
+ *                 1. idempotency key  (user, show, key) INSERT .. ON CONFLICT
+ *                 2. quota row        (show, user)      conditional upsert
+ *                 3. seat rows        (show, label)     SELECT .. ORDER BY label FOR UPDATE
+ *                 4. assign seats + insert reservation  one statement
  * </pre>
  *
  * Any decline throws, which rolls back everything done so far: a request
@@ -46,23 +54,47 @@ public class ReservationService {
     private final SeatInventory seats;
     private final ReservationRepository reservations;
     private final SeatReleaser releaser;
+    private final HotSeatGate hotSeats;
+    private final TransactionRunner tx;
     private final SeatReserveProperties props;
 
     public ReservationService(ShowService shows, IdempotencyRepository idempotency, QuotaRepository quotas,
                               SeatInventory seats, ReservationRepository reservations, SeatReleaser releaser,
-                              SeatReserveProperties props) {
+                              HotSeatGate hotSeats, TransactionRunner tx, SeatReserveProperties props) {
         this.shows = shows;
         this.idempotency = idempotency;
         this.quotas = quotas;
         this.seats = seats;
         this.reservations = reservations;
         this.releaser = releaser;
+        this.hotSeats = hotSeats;
+        this.tx = tx;
         this.props = props;
     }
 
-    @Transactional
     public ReserveResult reserve(ReserveCommand cmd) {
         Show show = shows.require(cmd.showId());
+        hotSeats.declineIfKnownTaken(show.id(), cmd.seats(), cmd.userId());
+        return hotSeats.withSeats(show.id(), cmd.seats(), () -> {
+            // Whoever held the gate before us may have just sold the seat.
+            hotSeats.declineIfKnownTaken(show.id(), cmd.seats(), cmd.userId());
+            try {
+                ReserveResult result = tx.inTransaction(() -> reserveInTransaction(show, cmd));
+                if (!result.replayed()) {
+                    Map<String, String> sold = new HashMap<>();
+                    result.reservation().seats().forEach(label -> sold.put(label, cmd.userId()));
+                    hotSeats.markTaken(show.id(), sold);
+                }
+                return result;
+            } catch (SeatsUnavailable declined) {
+                // Learn from the decline so the next requests for these seats fail fast.
+                hotSeats.markTaken(show.id(), declined.owners());
+                throw declined;
+            }
+        });
+    }
+
+    private ReserveResult reserveInTransaction(Show show, ReserveCommand cmd) {
         UUID reservationId = UUID.randomUUID();
         int requested = cmd.seats().size();
 
@@ -83,25 +115,24 @@ public class ReservationService {
         if (locked.size() != requested) {
             throw new UnknownSeats(missing(cmd.seats(), locked));
         }
-        List<String> taken = locked.stream()
+        Map<String, String> takenBy = new HashMap<>();
+        locked.stream()
                 .filter(seat -> seat.status() != SeatStatus.AVAILABLE)
-                .map(LockedSeat::label)
-                .toList();
-        if (!taken.isEmpty()) {
-            throw new SeatsUnavailable(taken);
+                .forEach(seat -> takenBy.put(seat.label(), seat.userId()));
+        if (!takenBy.isEmpty()) {
+            throw new SeatsUnavailable(takenBy.keySet().stream().sorted().toList(), takenBy, false);
         }
 
+        // 4. Assign the seats and record the reservation in one round trip.
         Long holdSeconds = cmd.hold() ? props.holdTtlSeconds() : null;
-        int assigned = seats.assign(show.id(), cmd.seats(), reservationId, cmd.userId(), holdSeconds);
-        if (assigned != requested) {
-            // Unreachable while we hold the row locks; refuse rather than half-sell.
-            throw new IllegalStateException("Assigned " + assigned + " of " + requested + " locked seats");
-        }
-
         long amount = Math.multiplyExact(show.pricePaise(), (long) requested);
-        Reservation reservation = reservations.insert(reservationId, show.id(), cmd.userId(), cmd.seats(), amount,
-                holdSeconds);
-        return new ReserveResult(reservation, false);
+        ReservationRepository.Created created = reservations.createAssigningSeats(reservationId, show.id(),
+                cmd.userId(), cmd.seats(), amount, holdSeconds);
+        if (created.seatsAssigned() != requested) {
+            // Unreachable while we hold the row locks; refuse rather than half-sell.
+            throw new IllegalStateException("Assigned " + created.seatsAssigned() + " of " + requested + " locked seats");
+        }
+        return new ReserveResult(created.reservation(), false);
     }
 
     public Reservation get(UUID reservationId, String userId) {
@@ -114,26 +145,28 @@ public class ReservationService {
      * HELD -> CONFIRMED. Lock order: reservation -> seats. Confirming an
      * already-confirmed reservation is a no-op success, so clients can retry.
      */
-    @Transactional
     public Reservation confirm(UUID reservationId, String userId) {
-        Reservation r = lockOwnedBy(reservationId, userId);
-        return switch (r.status()) {
-            case CONFIRMED -> r;
-            case EXPIRED -> throw new HoldExpired(reservationId);
-            case CANCELLED -> throw new ReservationNotActive(reservationId, r.status());
-            case HELD -> {
-                // Empty if past its deadline but not yet swept; the sweeper releases it.
-                Reservation confirmed = reservations.confirmIfLive(reservationId)
-                        .orElseThrow(() -> new HoldExpired(reservationId));
-                int count = r.seats().size();
-                int locked = seats.lockOwned(r.showId(), reservationId);
-                int changed = seats.confirmHeld(r.showId(), reservationId);
-                if (locked != count || changed != count) {
-                    throw new IllegalStateException("Hold " + reservationId + " confirmed " + changed + " of " + count);
+        return tx.inTransaction(() -> {
+            Reservation r = lockOwnedBy(reservationId, userId);
+            return switch (r.status()) {
+                case CONFIRMED -> r;
+                case EXPIRED -> throw new HoldExpired(reservationId);
+                case CANCELLED -> throw new ReservationNotActive(reservationId, r.status());
+                case HELD -> {
+                    // Empty if past its deadline but not yet swept; the sweeper releases it.
+                    Reservation confirmed = reservations.confirmIfLive(reservationId)
+                            .orElseThrow(() -> new HoldExpired(reservationId));
+                    int count = r.seats().size();
+                    int locked = seats.lockOwned(r.showId(), reservationId);
+                    int changed = seats.confirmHeld(r.showId(), reservationId);
+                    if (locked != count || changed != count) {
+                        throw new IllegalStateException(
+                                "Hold " + reservationId + " confirmed " + changed + " of " + count);
+                    }
+                    yield confirmed;
                 }
-                yield confirmed;
-            }
-        };
+            };
+        });
     }
 
     /**
@@ -142,17 +175,21 @@ public class ReservationService {
      * twice is a no-op success. An expired reservation cannot be cancelled: its
      * seats were already released and may now belong to someone else.
      */
-    @Transactional
     public Reservation cancel(UUID reservationId, String userId) {
-        Reservation r = lockOwnedBy(reservationId, userId);
-        return switch (r.status()) {
-            case CANCELLED -> r;
-            case EXPIRED -> throw new ReservationNotActive(reservationId, r.status());
-            case HELD, CONFIRMED -> {
-                releaser.release(r);
-                yield reservations.updateStatus(reservationId, ReservationStatus.CANCELLED);
-            }
-        };
+        Reservation cancelled = tx.inTransaction(() -> {
+            Reservation r = lockOwnedBy(reservationId, userId);
+            return switch (r.status()) {
+                case CANCELLED -> r;
+                case EXPIRED -> throw new ReservationNotActive(reservationId, r.status());
+                case HELD, CONFIRMED -> {
+                    releaser.release(r);
+                    yield reservations.updateStatus(reservationId, ReservationStatus.CANCELLED);
+                }
+            };
+        });
+        // After commit: the seats are free again, so stop fast-failing them here.
+        hotSeats.forget(cancelled.showId(), cancelled.seats());
+        return cancelled;
     }
 
     private Reservation lockOwnedBy(UUID reservationId, String userId) {

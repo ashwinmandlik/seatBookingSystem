@@ -10,7 +10,8 @@ import org.springframework.stereotype.Repository;
 @Repository
 public class SeatInventory {
 
-    public record LockedSeat(String label, SeatStatus status) {
+    /** @param userId current owner, null when available */
+    public record LockedSeat(String label, SeatStatus status, String userId) {
     }
 
     private final JdbcClient jdbc;
@@ -31,35 +32,15 @@ public class SeatInventory {
      */
     public List<LockedSeat> lockForUpdate(UUID showId, List<String> labels) {
         return jdbc.sql("""
-                        SELECT label, status FROM seats
+                        SELECT label, status, user_id FROM seats
                         WHERE show_id = ? AND label = ANY(?::text[])
                         ORDER BY label
                         FOR UPDATE
                         """)
                 .params(showId, labels.toArray(String[]::new))
-                .query((rs, i) -> new LockedSeat(rs.getString("label"), SeatStatus.valueOf(rs.getString("status"))))
+                .query((rs, i) -> new LockedSeat(rs.getString("label"), SeatStatus.valueOf(rs.getString("status")),
+                        rs.getString("user_id")))
                 .list();
-    }
-
-    /**
-     * Assigns seats that are locked by this transaction. The status guard is
-     * redundant given the lock, but means this statement alone can never
-     * overwrite a taken seat. Returns the number of seats assigned.
-     *
-     * @param holdSeconds null to confirm directly, otherwise hold until now() + this many seconds
-     */
-    public int assign(UUID showId, List<String> labels, UUID reservationId, String userId, Long holdSeconds) {
-        return jdbc.sql("""
-                        UPDATE seats
-                        SET status = CASE WHEN ?::bigint IS NULL THEN 'CONFIRMED' ELSE 'HELD' END,
-                            reservation_id = ?,
-                            user_id = ?,
-                            held_until = now() + make_interval(secs => ?::bigint),
-                            updated_at = now()
-                        WHERE show_id = ? AND label = ANY(?::text[]) AND status = 'AVAILABLE'
-                        """)
-                .params(holdSeconds, reservationId, userId, holdSeconds, showId, labels.toArray(String[]::new))
-                .update();
     }
 
     /**

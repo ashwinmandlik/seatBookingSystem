@@ -15,9 +15,27 @@ public final class ReservationDeclines {
 
     /** At least one requested seat is held or confirmed by someone (all-or-nothing: nothing was taken). */
     public static class SeatsUnavailable extends DomainException {
-        public SeatsUnavailable(List<String> unavailable) {
+
+        private final Map<String, String> owners;
+        private final boolean fastPath;
+
+        /**
+         * @param owners   label -> owning user, for the hot-seat cache only; never sent to clients
+         * @param fastPath true if declined from the in-memory cache without touching the database
+         */
+        public SeatsUnavailable(List<String> unavailable, Map<String, String> owners, boolean fastPath) {
             super(HttpStatus.CONFLICT, ErrorCode.SEAT_TAKEN, "Seats already taken: " + String.join(", ", unavailable),
                     Map.of("unavailable_seats", unavailable));
+            this.owners = Map.copyOf(owners);
+            this.fastPath = fastPath;
+        }
+
+        public Map<String, String> owners() {
+            return owners;
+        }
+
+        public boolean fastPath() {
+            return fastPath;
         }
     }
 

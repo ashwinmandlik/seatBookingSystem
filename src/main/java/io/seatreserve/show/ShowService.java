@@ -1,7 +1,9 @@
 package io.seatreserve.show;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -9,6 +11,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class ShowService {
 
     private final ShowRepository shows;
+    private final Map<UUID, Show> cache = new ConcurrentHashMap<>();
 
     public ShowService(ShowRepository shows) {
         this.shows = shows;
@@ -30,7 +33,18 @@ public class ShowService {
         return ShowResponse.of(show, shows.seats(showId));
     }
 
+    /**
+     * Shows are immutable once created, so they are cached forever after the
+     * first read: one fewer database round trip on every reservation. Unknown
+     * ids are not cached, so probing random ids cannot grow the cache.
+     */
     public Show require(UUID showId) {
-        return shows.findById(showId).orElseThrow(() -> new ShowNotFoundException(showId));
+        Show cached = cache.get(showId);
+        if (cached != null) {
+            return cached;
+        }
+        Show show = shows.findById(showId).orElseThrow(() -> new ShowNotFoundException(showId));
+        cache.putIfAbsent(showId, show);
+        return show;
     }
 }

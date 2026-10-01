@@ -29,22 +29,49 @@ public class ReservationRepository {
         this.jdbc = jdbc;
     }
 
+    /** A newly created reservation and how many seats the same statement assigned to it. */
+    public record Created(Reservation reservation, int seatsAssigned) {
+    }
+
     /**
+     * Assigns the (already locked) seats and records the reservation in a
+     * single statement, i.e. one database round trip instead of two.
+     *
+     * <p>The seat UPDATE keeps its {@code status = 'AVAILABLE'} guard even
+     * though the seats are locked, so this statement alone can never overwrite
+     * a taken seat; the caller checks {@code seatsAssigned} and rolls back if
+     * it falls short.
+     *
      * @param holdSeconds null for a confirmed reservation; otherwise the hold
      *                    expires at now() + holdSeconds. now() is fixed for the
-     *                    whole transaction, so this matches seats.held_until exactly.
+     *                    whole transaction, so seats.held_until and
+     *                    reservations.expires_at are identical.
      */
-    public Reservation insert(UUID id, UUID showId, String userId, List<String> seats, long amountPaise,
-                              Long holdSeconds) {
+    public Created createAssigningSeats(UUID id, UUID showId, String userId, List<String> seats, long amountPaise,
+                                        Long holdSeconds) {
+        String[] labels = seats.toArray(String[]::new);
         return jdbc.sql("""
-                        INSERT INTO reservations (id, show_id, user_id, seats, amount_paise, status, expires_at)
-                        VALUES (?, ?, ?, ?::text[], ?,
-                                CASE WHEN ?::bigint IS NULL THEN 'CONFIRMED' ELSE 'HELD' END,
-                                now() + make_interval(secs => ?::bigint))
-                        RETURNING *
+                        WITH assigned AS (
+                            UPDATE seats
+                            SET status = CASE WHEN ?::bigint IS NULL THEN 'CONFIRMED' ELSE 'HELD' END,
+                                reservation_id = ?,
+                                user_id = ?,
+                                held_until = now() + make_interval(secs => ?::bigint),
+                                updated_at = now()
+                            WHERE show_id = ? AND label = ANY(?::text[]) AND status = 'AVAILABLE'
+                            RETURNING 1
+                        ), created AS (
+                            INSERT INTO reservations (id, show_id, user_id, seats, amount_paise, status, expires_at)
+                            VALUES (?, ?, ?, ?::text[], ?,
+                                    CASE WHEN ?::bigint IS NULL THEN 'CONFIRMED' ELSE 'HELD' END,
+                                    now() + make_interval(secs => ?::bigint))
+                            RETURNING *
+                        )
+                        SELECT created.*, (SELECT count(*) FROM assigned) AS seats_assigned FROM created
                         """)
-                .params(id, showId, userId, seats.toArray(String[]::new), amountPaise, holdSeconds, holdSeconds)
-                .query(RESERVATION)
+                .params(holdSeconds, id, userId, holdSeconds, showId, labels,
+                        id, showId, userId, labels, amountPaise, holdSeconds, holdSeconds)
+                .query((rs, i) -> new Created(RESERVATION.mapRow(rs, i), rs.getInt("seats_assigned")))
                 .single();
     }
 

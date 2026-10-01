@@ -61,6 +61,25 @@ class ReservationConcurrencyTest extends IntegrationTest {
         assertThat(seatOwner(show, "A1")).isEqualTo(winner);
         assertThat(reservationCount(show)).isEqualTo(1);
         assertReconciles(show, 9, 0, 1);
+        // The losers queued on the in-memory gate, not on the row lock, and were
+        // all turned away from the cache without a database round trip.
+        long declinedInMemory = outcomes.stream()
+                .filter(o -> o.error() instanceof SeatsUnavailable s && s.fastPath())
+                .count();
+        assertThat(declinedInMemory).isEqualTo(499);
+    }
+
+    @Test
+    void ownersIdempotentRetryStillReplaysWhileTheSeatIsCachedAsTaken() {
+        UUID show = createShow(10, 4);
+        ReserveResult first = service.reserve(new ReserveCommand(show, "alice", List.of("A1"), false, "k"));
+
+        ReserveResult retry = service.reserve(new ReserveCommand(show, "alice", List.of("A1"), false, "k"));
+
+        assertThat(retry.replayed()).isTrue();
+        assertThat(retry.reservation().id()).isEqualTo(first.reservation().id());
+        assertThatThrownBy(() -> service.reserve(new ReserveCommand(show, "bob", List.of("A1"), false, "k")))
+                .isInstanceOfSatisfying(SeatsUnavailable.class, e -> assertThat(e.fastPath()).isTrue());
     }
 
     @Test

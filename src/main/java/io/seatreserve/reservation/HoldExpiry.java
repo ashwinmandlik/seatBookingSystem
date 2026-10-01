@@ -1,8 +1,8 @@
 package io.seatreserve.reservation;
 
+import io.seatreserve.common.db.TransactionRunner;
 import java.util.Optional;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Expires holds whose deadline has passed: HELD -> EXPIRED, seats back to
@@ -18,18 +18,26 @@ public class HoldExpiry {
 
     private final ReservationRepository reservations;
     private final SeatReleaser releaser;
+    private final HotSeatGate hotSeats;
+    private final TransactionRunner tx;
 
-    public HoldExpiry(ReservationRepository reservations, SeatReleaser releaser) {
+    public HoldExpiry(ReservationRepository reservations, SeatReleaser releaser, HotSeatGate hotSeats,
+                      TransactionRunner tx) {
         this.reservations = reservations;
         this.releaser = releaser;
+        this.hotSeats = hotSeats;
+        this.tx = tx;
     }
 
     /** Expires the oldest expired hold, if any. Safe to call from many instances at once. */
-    @Transactional
     public Optional<Reservation> expireOne() {
-        return reservations.lockNextExpired().map(hold -> {   // 1. reservation (SKIP LOCKED)
-            releaser.release(hold);                            // 2. quota, 3. seats
-            return reservations.updateStatus(hold.id(), ReservationStatus.EXPIRED);
-        });
+        Optional<Reservation> expired = tx.inTransaction(() ->
+                reservations.lockNextExpired().map(hold -> {   // 1. reservation (SKIP LOCKED)
+                    releaser.release(hold);                    // 2. quota, 3. seats
+                    return reservations.updateStatus(hold.id(), ReservationStatus.EXPIRED);
+                }));
+        // After commit: the seats are free again, so stop fast-failing them here.
+        expired.ifPresent(r -> hotSeats.forget(r.showId(), r.seats()));
+        return expired;
     }
 }
