@@ -13,8 +13,7 @@ CREATE TABLE shows (
     id               UUID        PRIMARY KEY,
     name             TEXT        NOT NULL,
     price_paise      BIGINT      NOT NULL CHECK (price_paise >= 0),
-    per_user_limit   INT         NOT NULL CHECK (per_user_limit > 0),
-    hold_ttl_seconds INT         NOT NULL CHECK (hold_ttl_seconds > 0),
+    per_user_limit   INT         NOT NULL DEFAULT 4 CHECK (per_user_limit > 0),
     total_seats      INT         NOT NULL CHECK (total_seats > 0),
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -28,6 +27,7 @@ CREATE TABLE seats (
                                CHECK (status IN ('AVAILABLE', 'HELD', 'CONFIRMED')),
     reservation_id UUID,
     user_id        TEXT,
+    -- Deadline of this seat's hold: now() + the configured hold TTL, set when held.
     held_until     TIMESTAMPTZ,
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (show_id, label),
