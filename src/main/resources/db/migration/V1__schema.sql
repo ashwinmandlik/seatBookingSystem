@@ -23,6 +23,7 @@ CREATE TABLE shows (
 CREATE TABLE seats (
     show_id        UUID        NOT NULL REFERENCES shows (id),
     label          TEXT        NOT NULL,
+    position       INT         NOT NULL, -- creation order, for display only
     status         TEXT        NOT NULL DEFAULT 'AVAILABLE'
                                CHECK (status IN ('AVAILABLE', 'HELD', 'CONFIRMED')),
     reservation_id UUID,

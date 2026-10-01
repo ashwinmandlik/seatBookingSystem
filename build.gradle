@@ -30,9 +30,10 @@ dependencies {
     runtimeOnly 'io.micrometer:micrometer-registry-prometheus'
 
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
-    testImplementation 'org.springframework.boot:spring-boot-testcontainers'
-    testImplementation 'org.testcontainers:junit-jupiter'
-    testImplementation 'org.testcontainers:postgresql'
+    // Real Postgres binaries run in-process: concurrency tests exercise the
+    // actual row locks, and no Docker daemon is needed to run them.
+    testImplementation 'io.zonky.test:embedded-postgres:2.2.2'
+    testImplementation enforcedPlatform('io.zonky.test.postgres:embedded-postgres-binaries-bom:16.15.0')
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
