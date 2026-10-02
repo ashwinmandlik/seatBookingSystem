@@ -7,6 +7,8 @@ build
 bin
 out
 *.md
-docker-compose.yml
-fly.toml
+docker-compose*.yml
+deploy
 burst
+.env
+.logs-password

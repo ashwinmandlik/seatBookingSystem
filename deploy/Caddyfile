@@ -1,0 +1,27 @@
+# HTTPS for $DOMAIN (e.g. 203-0-113-7.sslip.io), certificate from Let's Encrypt.
+{$DOMAIN} {
+	encode gzip
+
+	# Read-only live logs for reviewers.
+	handle /logs* {
+		basic_auth {
+			{$LOGS_USER} {$LOGS_PASSWORD_HASH}
+		}
+		reverse_proxy dozzle:8080
+	}
+
+	handle {
+		reverse_proxy app:8080 {
+			# Route only to an instance that is ready (database reachable).
+			health_uri /readyz
+			health_interval 5s
+			health_timeout 3s
+			# During a cold start, hold requests briefly instead of failing them.
+			lb_try_duration 30s
+			transport http {
+				keepalive 2m
+				keepalive_idle_conns 512
+			}
+		}
+	}
+}

@@ -38,3 +38,4 @@ out/
 
 ### Local env ###
 .env
+.logs-password

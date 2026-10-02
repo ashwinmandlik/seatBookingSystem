@@ -1,0 +1,66 @@
+# Production overlay: the same stack as docker-compose.yml, plus HTTPS and a
+# log viewer, with secrets from .env (see .env.example) instead of defaults.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+services:
+  app:
+    restart: unless-stopped
+    ports: !reset []          # reachable only through Caddy
+    environment:
+      DATABASE_URL: postgresql://seatreserve:${POSTGRES_PASSWORD:?set in .env}@postgres:5432/seatreserve
+      JWT_SECRET: ${JWT_SECRET:?set in .env}
+      ADMIN_KEY: ${ADMIN_KEY:?set in .env}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-24}
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+    ulimits:
+      nofile: { soft: 1048576, hard: 1048576 }
+
+  postgres:
+    restart: unless-stopped
+    ports: !reset []          # never exposed to the internet
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+    command: ["postgres", "-c", "shared_buffers=1GB", "-c", "max_connections=100"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    restart: unless-stopped
+    ports: !reset []
+
+  # TLS termination and connection absorption: thousands of client connections
+  # end here and reach the app over a small pool of kept-alive connections.
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?set in .env}
+      LOGS_USER: ${LOGS_USER:-grader}
+      LOGS_PASSWORD_HASH: ${LOGS_PASSWORD_HASH:?set in .env}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    ulimits:
+      nofile: { soft: 1048576, hard: 1048576 }
+    depends_on:
+      - app
+
+  # Live logs in the browser at https://$DOMAIN/logs (basic auth in Caddy).
+  dozzle:
+    image: amir20/dozzle:latest
+    restart: unless-stopped
+    environment:
+      DOZZLE_BASE: /logs
+      DOZZLE_NO_ANALYTICS: "true"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+volumes:
+  pgdata:
+  caddy_data:
