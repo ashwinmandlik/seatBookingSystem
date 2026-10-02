@@ -49,7 +49,7 @@ public class SecurityConfig {
                 .csrf(AbstractHttpConfigurer::disable)
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers(HttpMethod.POST, "/auth/token").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/auth/token", "/auth/tokens").permitAll()
                         .requestMatchers("/livez", "/readyz", "/health/live", "/health/ready", "/actuator/health/**", "/actuator/prometheus",
                                 "/actuator/info").permitAll()
                         .requestMatchers(HttpMethod.GET, "/shows/*").permitAll()
