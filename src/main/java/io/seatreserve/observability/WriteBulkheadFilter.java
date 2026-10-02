@@ -34,7 +34,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * the API promises, so requests wait instead.
  */
 @Component
-@Order(Ordered.HIGHEST_PRECEDENCE + 1)   // right after the request-id filter
+@Order(Ordered.HIGHEST_PRECEDENCE + 2)   // after the request-id and fast-decline filters
 public class WriteBulkheadFilter extends OncePerRequestFilter {
 
     private final Semaphore permits;
