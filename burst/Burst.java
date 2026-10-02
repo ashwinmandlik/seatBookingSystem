@@ -55,7 +55,9 @@ public class Burst {
     static int scale = 1;
     static int concurrency = 2000;
     static int perUserLimit = 4;
-    static Duration REQUEST_TIMEOUT = Duration.ofSeconds(60);
+    // Matches the ~100 s after which Cloudflare (in front of Render) gives up on a request anyway; a
+    // shorter client timeout would count slow but successful answers from a small instance as dropped.
+    static Duration REQUEST_TIMEOUT = Duration.ofSeconds(100);
     static boolean waitForExpiry = false;
     static HttpClient http;
     static final List<String> SERVER_ERRORS = new CopyOnWriteArrayList<>();

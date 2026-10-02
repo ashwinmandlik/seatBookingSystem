@@ -14,9 +14,32 @@ the live URL.
 | Health | [`/health/live`](https://seat-reserve-lrvt.onrender.com/health/live) · [`/health/ready`](https://seat-reserve-lrvt.onrender.com/health/ready) (also `/livez`, `/readyz`) |
 | Metrics | [`/actuator/prometheus`](https://seat-reserve-lrvt.onrender.com/actuator/prometheus) |
 | Logs | JSON on stdout (Render log viewer); screen recording of live logs under a burst: *(link in submission)* |
-| Burst | `./burst.sh https://seat-reserve-lrvt.onrender.com` (needs the admin key, see [Burst test](#burst-test)) |
+| Burst | `ADMIN_KEY='<admin key>' ./burst.sh https://seat-reserve-lrvt.onrender.com` (see [Run the burst from your laptop](#run-the-burst-from-your-laptop)) |
 | Design write-up | [WRITEUP.md](WRITEUP.md) |
 | Clean-clone CI | [`ci`](.github/workflows/ci.yml) on every push, from a fresh checkout: `./gradlew build` and `./gradlew dev` + the Postman suite on Linux, macOS (Apple Silicon) and Windows; `docker compose up --build`, then the Postman suite, `./burst.sh --wait-for-expiry` with 15 s holds (all 18 checks) and readiness failing closed with Postgres stopped |
+
+### Run the burst from your laptop
+
+You need **Java 21 or newer** (`java -version` to check) **or Docker**, and the admin key from the submission email.
+Clone the repo, then from its folder:
+
+```bash
+# macOS / Linux (or Git Bash on Windows)
+git clone https://github.com/ashwinmandlik/seatBookingSystem.git && cd seatBookingSystem
+ADMIN_KEY='<admin key>' ./burst.sh https://seat-reserve-lrvt.onrender.com
+```
+```powershell
+# Windows PowerShell
+git clone https://github.com/ashwinmandlik/seatBookingSystem.git; cd seatBookingSystem
+java burst/Burst.java https://seat-reserve-lrvt.onrender.com --admin-key '<admin key>'
+```
+
+- This fires about **5,900 requests**, including a 1,000-user storm on one seat, and takes **1–2 minutes** on the
+  free instance. Add `--scale 4` for about 23,500 requests (4–5 minutes).
+- It ends with the outcome counts, a reconciliation against the server, and a list of checks. Success is
+  `RESULT: PASS`, exit code `0`.
+- No Java 21? `./burst.sh` uses Docker automatically. On Windows without Java or bash, see
+  [all the ways to run it](#burst-test) (including running it without cloning).
 
 ### For reviewers: pointing your own load tool at it
 
@@ -275,7 +298,7 @@ The burst is one self-contained Java file, [`burst/Burst.java`](burst/Burst.java
 | `--admin-key KEY` | `ADMIN_KEY` env var, else `local-admin-key` | needed to create the show and tokens; the live key is in the submission email |
 | `--scale N` | `1` | multiplies every scenario: 1 ≈ 5,900 requests, 4 ≈ 23,500 |
 | `--concurrency N` | `2000` | maximum requests open at the same time |
-| `--timeout SECONDS` | `60` | per request; use `100` against the live URL |
+| `--timeout SECONDS` | `100` | per request; Cloudflare in front of Render also gives up after ~100 s |
 | `--wait-for-expiry` | off | also wait for unconfirmed holds to expire (about 5 min on the live service) |
 
 **Ways to run it**
