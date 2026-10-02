@@ -36,6 +36,10 @@ dependencies {
     // actual row locks, and no Docker daemon is needed to run them.
     testImplementation 'io.zonky.test:embedded-postgres:2.2.2'
     testImplementation enforcedPlatform('io.zonky.test.postgres:embedded-postgres-binaries-bom:16.15.0')
+    // The library ships x86-64 binaries only; add ARM so a clean clone also
+    // builds on Apple Silicon and on ARM servers (e.g. the deployment VM).
+    testRuntimeOnly 'io.zonky.test.postgres:embedded-postgres-binaries-darwin-arm64v8'
+    testRuntimeOnly 'io.zonky.test.postgres:embedded-postgres-binaries-linux-arm64v8'
     // Real redis-server binaries for the shared-cache tests, again without Docker.
     testImplementation 'com.github.codemonstur:embedded-redis:1.4.4'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
