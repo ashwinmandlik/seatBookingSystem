@@ -58,7 +58,7 @@ no ORM, so the atomic statements are visible) · Micrometer/Prometheus · Docker
 |---|---|---|
 | Call the **live URL** | nothing (curl / your load tool) | — |
 | `docker compose up --build` | **Docker** | JDK, Gradle, Postgres and Redis all run in containers. Only port 8080 is published, so a local Postgres on 5432 doesn't conflict |
-| `./gradlew build` / `test` / `bootRun` | **any JDK 17+** | Gradle downloads itself and, if needed, JDK 21; tests start real Postgres/Redis binaries in-process (Linux, macOS Intel/Apple Silicon, Windows), so no database and no Docker |
+| `./gradlew dev` / `build` / `test` | **any JDK 17+** | Gradle downloads itself and, if needed, JDK 21; tests start real Postgres/Redis binaries in-process (Linux, macOS Intel/Apple Silicon, Windows), so no database and no Docker |
 | `./burst.sh <URL>` | **Java 21+ or Docker**, and bash (Git Bash/WSL on Windows) | or run `java burst/Burst.java <URL>` directly |
 
 ### With Docker (same as production)
@@ -70,12 +70,16 @@ curl localhost:8080/health/ready
 
 Starts the app, Postgres 16 and (optional) Redis. The admin key is `local-admin-key`.
 
-### Without Docker
+### Without Docker (one command)
 
 ```bash
-./gradlew devDb      # terminal 1: throwaway Postgres 16 on :5432 (embedded binaries)
-./gradlew bootRun    # terminal 2: the app on :8080
+./gradlew dev        # app on :8080 + a throwaway embedded Postgres 16; Ctrl+C stops both
 ```
+
+Needs only a JDK (17+). The admin key is `local-admin-key`. Logs are plain text here; containers log JSON
+(`LOG_FORMAT=ecs ./gradlew dev` shows the JSON). To run the database separately: `./gradlew devDb`, then
+`./gradlew bootRun` in another terminal. To use your own Postgres: `DATABASE_URL=… ./gradlew bootRun`. Plain `./gradlew bootRun` with no database
+stops with a short message listing these options.
 
 ### Tests
 
@@ -83,7 +87,7 @@ Starts the app, Postgres 16 and (optional) Redis. The admin key is `local-admin-
 ./gradlew test
 ```
 
-The 97 tests run against **real PostgreSQL 16 and Redis binaries** started in-process. No Docker is needed, so
+The 100 tests run against **real PostgreSQL 16 and Redis binaries** started in-process. No Docker is needed, so
 they run the same on Linux, macOS (Intel or Apple Silicon) and Windows. They include genuinely concurrent races:
 1000 users on one seat, 1000 identical retries, per-user-limit floods, cancel vs reserve, confirm vs
 expiry, multiple sweepers, and a mixed 100-thread stress test that would surface any deadlock.

@@ -57,7 +57,25 @@ tasks.named('jar') {
     enabled = false
 }
 
-// Local Postgres 16 without Docker: ./gradlew devDb (then ./gradlew bootRun).
+// Local run without Docker or a database install: ./gradlew dev (app + embedded Postgres).
+tasks.register('dev', JavaExec) {
+    group = 'application'
+    description = 'Runs the app with a throwaway embedded Postgres 16 (no Docker needed).'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'io.seatreserve.dev.LocalDev'
+}
+
+// Readable console logs when a person runs the app from Gradle; containers keep
+// JSON (the default) for log pipelines. LOG_FORMAT=ecs ./gradlew dev shows the JSON.
+['dev', 'bootRun'].each { name ->
+    tasks.named(name) {
+        if (!System.getenv('LOG_FORMAT')) {
+            environment 'LOG_FORMAT', ''
+        }
+    }
+}
+
+// Just the database: ./gradlew devDb (then ./gradlew bootRun in another terminal).
 tasks.register('devDb', JavaExec) {
     group = 'application'
     description = 'Runs a throwaway Postgres 16 on localhost:5432 (no Docker needed).'
