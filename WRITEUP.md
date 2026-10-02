@@ -96,8 +96,8 @@ the lock order.
 **I choose consistency.** Postgres is the single source of truth, and selling a seat twice (refunds, a
 broken promise) is far worse than briefly refusing sales.
 
-- **App can't reach Postgres:** reserve, confirm and cancel fail with `503` (+ `Retry-After`), `/health/ready`
-  turns `503` and the proxy stops routing to the instance. Nothing is sold from a cache or a local guess. The
+- **App can't reach Postgres:** reserve, confirm and cancel fail with `503` (+ `Retry-After`) and `/health/ready`
+  turns `503` (behind the VM deployment's proxy, routing stops too). Nothing is sold from a cache or a local guess. The
   hot-seat cache and Redis can only *decline*, so even during a partition they can't grant a seat.
 - **Ambiguous commit** (connection lost during `COMMIT`): the retry layer re-runs the transaction. With an
   idempotency key that's a clean replay; without one, at worst a 409 for the user's own seat. Never a second sale.
@@ -142,7 +142,8 @@ ChatGPT for an independent spec and used it as a checklist against what we'd bui
   explicitly *not* load-shedding with 429, because the brief says losers get 409.
 - An optional, fail-open Redis L2 for the hot-seat cache. I pushed for Redis; the AI argued for adding it
   as a second level rather than replacing the in-memory layer.
-- $0 hosting: Oracle Always Free over Render, because Render's free tier sleeps.
+- $0 hosting: first an Oracle Always Free VM (never sleeps); when Oracle had no free capacity, Render + Neon,
+  with a keep-warm cron and idle-aware background jobs so Neon's free compute hours last the month.
 - From the ChatGPT spec: adopt `/health/live|ready`, request ids in errors and more metrics; reject what
   contradicted the brief (holds by default, unsigned `Bearer <user-id>` tokens).
 

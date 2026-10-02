@@ -11,7 +11,7 @@ the live URL.
 | **Live URL** | `https://<LIVE-HOST>` *(filled in after deploy)* |
 | Health | [`/health/live`](https://<LIVE-HOST>/health/live) · [`/health/ready`](https://<LIVE-HOST>/health/ready) (also `/livez`, `/readyz`) |
 | Metrics | [`/actuator/prometheus`](https://<LIVE-HOST>/actuator/prometheus) |
-| Live logs | [`/logs`](https://<LIVE-HOST>/logs), user `grader`, password in the submission email |
+| Logs | JSON on stdout (Render log viewer); screen recording of live logs under a burst: *(link in submission)* |
 | Burst | `./burst.sh https://<LIVE-HOST>` (needs the admin key, see [Burst test](#burst-test)) |
 | Design write-up | [WRITEUP.md](WRITEUP.md) |
 
@@ -72,7 +72,7 @@ Starts the app, Postgres 16 and (optional) Redis. The admin key is `local-admin-
 ./gradlew test
 ```
 
-The 77 tests run against **real PostgreSQL 16 and Redis binaries** started in-process. No Docker is needed, so
+The 84 tests run against **real PostgreSQL 16 and Redis binaries** started in-process. No Docker is needed, so
 they run the same on Linux, macOS (Intel or Apple Silicon) and Windows. They include genuinely concurrent races:
 1000 users on one seat, 1000 identical retries, per-user-limit floods, cancel vs reserve, confirm vs
 expiry, multiple sweepers, and a mixed 100-thread stress test that would surface any deadlock.
@@ -311,27 +311,48 @@ RESULT: PASS
 
 ## Deployment
 
-Production is **this repo's `docker-compose.yml` plus `docker-compose.prod.yml`**: the same containers as
-local, plus Caddy (automatic HTTPS, connection absorption, readiness-gated routing) and Dozzle (log viewer).
-Postgres runs on the same host and is never exposed.
+### Live: Render (free) + Neon (free Postgres), both in Singapore
 
-It's deployed on an **Oracle Cloud Always Free** ARM VM (4 OCPU / 24 GB). I chose it over free PaaS tiers because
-it never sleeps (Render's free tier sleeps after 15 minutes and wakes a JVM in 30–60 s, which would fail
-"survive a cold start"), has headroom for a 20k burst, and lets production be exactly `docker compose up`.
+`render.yaml` is a Render Blueprint, so the deploy is a few clicks and no hand-written config:
 
-**Deploy to any fresh Ubuntu 24.04 VM** (ports 80/443 open in the cloud firewall):
+1. **Neon** ([neon.com](https://neon.com)): create a project in **AWS Asia Pacific (Singapore)** and copy the
+   **direct** connection string (not the "pooled" one: Flyway's migration lock and server-side prepared
+   statements need a real session). It looks like
+   `postgresql://user:pass@ep-….ap-southeast-1.aws.neon.tech/neondb?sslmode=require` and is used as-is.
+2. **Render** ([render.com](https://render.com)): **New → Blueprint** → select this repo → paste the Neon string
+   when prompted for `DATABASE_URL`. `JWT_SECRET` and `ADMIN_KEY` are generated; the admin key is under
+   the service's **Environment** tab. Render builds the `Dockerfile` and redeploys on every push.
+3. **Keep-warm:** in the GitHub repo set the Actions variable **`LIVE_URL`** (Settings → Secrets and variables →
+   Actions → Variables) to the Render URL. [`keep-warm`](.github/workflows/keep-warm.yml) pings
+   `/health/live` every 10 minutes so the free instance never reaches its 15-minute sleep.
+
+**How the free tiers are handled:**
+
+| Constraint | Handling |
+|---|---|
+| Render free sleeps after 15 idle minutes (~1 min to wake) | `keep-warm` pings every 10 min. Render's 750 free hours/month cover running all month. |
+| Render free has 512 MB RAM and a fraction of a CPU | Serial GC, C1-only JIT, 60% heap, pool of 10, 4000 max connections. Peak memory measured at **386 MB** during a full burst. |
+| Neon free pauses after 5 idle minutes and allows 100 CU-hours/month | **Idle-aware mode** (`IDLE_AWARE_ENABLED=true`): the hold sweeper queries only when a hold can be due and the seat gauges only after seats change (plus hourly), the pool shrinks to zero, and Render's health check and the keep-warm ping use `/health/live`, which never touches the database. An idle service lets Neon pause. |
+| Readiness | `/health/ready` still checks Postgres and returns `503` when it's unreachable, for anyone who asks. Render routes on liveness so its constant polling doesn't keep the database awake. |
+| Logs | Render's log viewer is per-account, so a short screen recording of the live logs under a burst is linked in the submission. Lines are JSON with `request_id`/`user_id`. |
+
+A cold start (first deploy, a restart, or a sleep the pinger missed) takes about a minute on the free
+instance, then serves normally; the first request after Neon has paused takes a few hundred ms more while it wakes.
+
+### Alternative: any Docker host (same containers as local)
+
+For a VM, production is **`docker-compose.yml` plus `docker-compose.prod.yml`**: the same containers as local,
+plus Caddy (automatic HTTPS, connection absorption, readiness-gated routing) and Dozzle (log viewer at
+`/logs`), with Postgres on the same host and never exposed. On a fresh Ubuntu 24.04 VM with ports 80/443 open:
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/<you>/<repo>/main/deploy/setup-vm.sh
 bash setup-vm.sh https://github.com/<you>/<repo>.git
 ```
-The script installs Docker, opens 80/443 in iptables, raises kernel connection limits, generates secrets
-once into `.env`, builds and starts the stack, waits for `/health/ready` over HTTPS, and prints the URL,
-admin key and log login. Re-run it to deploy a new version. Containers restart automatically, so a VM
-reboot comes back healthy without intervention.
-
-Any other Docker host works with `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d`
-and a `.env` like [.env.example](.env.example). On a PaaS, set `DATABASE_URL` to the provider's
-`postgres://user:pass@host/db` URL as given; it is converted to JDBC automatically.
+The script installs Docker, opens 80/443, raises kernel connection limits, generates secrets once into `.env`,
+builds and starts the stack, waits for `/health/ready` over HTTPS, and prints the URL, admin key and log login.
+Containers restart automatically, so a reboot comes back healthy. (I first targeted an Oracle Cloud Always Free
+ARM VM, which never sleeps and has more headroom, but Oracle had no free capacity in my region, so the live
+deployment is Render.)
 
 ### Configuration
 
@@ -339,13 +360,16 @@ and a `.env` like [.env.example](.env.example). On a PaaS, set `DATABASE_URL` to
 |---|---|---|
 | `DATABASE_URL` | `jdbc:postgresql://localhost:5432/seatreserve` | `jdbc:` or provider-style `postgres://user:pass@host/db` |
 | `DATABASE_USERNAME` / `DATABASE_PASSWORD` | `seatreserve` | not needed if the URL carries credentials |
-| `PORT` | `8080` | |
+| `PORT` | `8080` | Render sets this |
 | `JWT_SECRET` / `ADMIN_KEY` | dev values | **set in production** (≥ 32 chars for the secret) |
 | `HOLD_TTL_SECONDS` | `300` | hold lifetime |
 | `HOLD_SWEEP_INTERVAL_MS` / `HOLD_SWEEPER_ENABLED` | `1000` / `true` | expiry sweeper |
+| `IDLE_AWARE_ENABLED` / `IDLE_AWARE_MAX_IDLE_MINUTES` | `false` / `60` | leave an idle, pause-when-idle database alone |
 | `DB_POOL_SIZE` / `DB_CONNECTION_TIMEOUT_MS` | `20` / `60000` | the pool is the backpressure valve |
+| `DB_MIN_IDLE` / `DB_IDLE_TIMEOUT_MS` | pool size / `600000` | `0` / `60000` lets the pool shrink to zero when idle |
 | `HOT_SEATS_ENABLED` / `HOT_SEATS_CACHE_TTL_MS` | `true` / `2000` | in-memory hot-seat gate |
 | `REDIS_ENABLED` / `REDIS_URL` | `false` / `redis://localhost:6379` | optional shared cache |
+| `SERVER_MAX_CONNECTIONS` / `SERVER_ACCEPT_COUNT` | `20000` / `2000` | Tomcat connection limits |
 | `LOG_FORMAT` | `ecs` | or `logstash` |
 
 ---
