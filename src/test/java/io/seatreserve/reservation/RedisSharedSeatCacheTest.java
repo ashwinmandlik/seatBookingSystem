@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.lettuce.core.ClientOptions;
 import io.lettuce.core.ClientOptions.DisconnectedBehavior;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.seatreserve.reservation.ReservationDeclines.SeatsUnavailable;
 import java.io.IOException;
 import java.net.ServerSocket;
@@ -51,7 +52,7 @@ class RedisSharedSeatCacheTest {
         factory.afterPropertiesSet();
         factory.start();
         redis = new StringRedisTemplate(factory);
-        cache = new RedisSharedSeatCache(redis, TTL, BREAKER, now::get);
+        cache = new RedisSharedSeatCache(redis, TTL, BREAKER, now::get, new SimpleMeterRegistry());
     }
 
     @AfterEach
@@ -94,7 +95,7 @@ class RedisSharedSeatCacheTest {
         long localTtl = Duration.ofSeconds(2).toNanos();
         HotSeatGate vm1 = new HotSeatGate(true, localTtl, vmClock::get, cache);
         HotSeatGate vm2 = new HotSeatGate(true, localTtl, vmClock::get,
-                new RedisSharedSeatCache(redis, TTL, BREAKER, now::get));
+                new RedisSharedSeatCache(redis, TTL, BREAKER, now::get, new SimpleMeterRegistry()));
 
         // alice buys A1 on VM 1; VM 2 has never seen A1 but declines bob from Redis.
         vm1.markTaken(show, Map.of("A1", "alice"));

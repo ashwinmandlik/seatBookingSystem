@@ -8,6 +8,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.function.LongSupplier;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.connection.RedisStringCommands.SetOption;
@@ -43,8 +46,16 @@ class RedisSharedSeatCache implements SharedSeatCache {
     private volatile long openUntilNanos;
     private volatile boolean open;
 
-    RedisSharedSeatCache(StringRedisTemplate redis, Duration ttl, Duration breaker, LongSupplier nanoClock) {
+    private final Counter errors;
+
+    RedisSharedSeatCache(StringRedisTemplate redis, Duration ttl, Duration breaker, LongSupplier nanoClock,
+                         MeterRegistry registry) {
         this.redis = redis;
+        this.errors = Counter.builder("shared.cache.errors").description("Redis calls that failed")
+                .register(registry);
+        Gauge.builder("shared.cache.breaker.open", this, c -> c.open ? 1 : 0)
+                .description("1 while Redis is being bypassed after an error")
+                .register(registry);
         this.ttlMillis = ttl.toMillis();
         this.breakerNanos = breaker.toNanos();
         this.nanoClock = nanoClock;
@@ -119,6 +130,7 @@ class RedisSharedSeatCache implements SharedSeatCache {
     }
 
     private void trip(RuntimeException e) {
+        errors.increment();
         if (!open) {
             log.warn("Shared seat cache unavailable, bypassing Redis for {} ms: {}",
                     breakerNanos / 1_000_000, e.getMessage());

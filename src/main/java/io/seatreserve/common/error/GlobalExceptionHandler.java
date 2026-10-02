@@ -1,6 +1,7 @@
 package io.seatreserve.common.error;
 
 import com.fasterxml.jackson.databind.PropertyNamingStrategies;
+import io.seatreserve.observability.RequestCorrelationFilter;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.slf4j.Logger;
@@ -8,6 +9,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.dao.TransientDataAccessException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.jdbc.CannotGetJdbcConnectionException;
@@ -16,6 +18,8 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.RequestAttributes;
+import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
@@ -35,7 +39,7 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(DomainException.class)
     ResponseEntity<ApiError> domain(DomainException e) {
         log.debug("Declined: {} {}", e.code(), e.getMessage());
-        return ResponseEntity.status(e.status()).body(ApiError.of(e.code(), e.getMessage(), e.details()));
+        return respond(e.status(), ApiError.of(e.code(), e.getMessage(), e.details()));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -65,25 +69,24 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)
     ResponseEntity<ApiError> typeMismatch(MethodArgumentTypeMismatchException e) {
         // e.g. an id that is not a UUID cannot name any existing resource.
-        return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                .body(ApiError.of(ErrorCode.NOT_FOUND, "No resource with id '" + e.getValue() + "'"));
+        return respond(HttpStatus.NOT_FOUND, ApiError.of(ErrorCode.NOT_FOUND, "No resource with id '" + e.getValue() + "'"));
     }
 
     @ExceptionHandler(NoResourceFoundException.class)
     ResponseEntity<ApiError> noRoute(NoResourceFoundException e) {
-        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiError.of(ErrorCode.NOT_FOUND, "Not found"));
+        return respond(HttpStatus.NOT_FOUND, ApiError.of(ErrorCode.NOT_FOUND, "Not found"));
     }
 
     @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
     ResponseEntity<ApiError> method(HttpRequestMethodNotSupportedException e) {
-        return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED)
-                .body(ApiError.of(ErrorCode.METHOD_NOT_ALLOWED, e.getMessage()));
+        return respond(HttpStatus.METHOD_NOT_ALLOWED, ApiError.of(ErrorCode.METHOD_NOT_ALLOWED, e.getMessage()));
     }
 
     /** Database briefly unreachable or saturated: tell the client to retry. */
     @ExceptionHandler({CannotGetJdbcConnectionException.class, TransientDataAccessException.class})
     ResponseEntity<ApiError> unavailable(Exception e) {
         log.warn("Database unavailable: {}", e.getMessage());
+        recordOutcome(ErrorCode.SERVICE_UNAVAILABLE);
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .header(HttpHeaders.RETRY_AFTER, "1")
                 .body(ApiError.of(ErrorCode.SERVICE_UNAVAILABLE, "Temporarily unavailable, retry shortly"));
@@ -92,11 +95,23 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(Exception.class)
     ResponseEntity<ApiError> unexpected(Exception e) {
         log.error("Unhandled exception", e);
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(ApiError.of(ErrorCode.INTERNAL_ERROR, "Internal error"));
+        return respond(HttpStatus.INTERNAL_SERVER_ERROR, ApiError.of(ErrorCode.INTERNAL_ERROR, "Internal error"));
     }
 
     private static ResponseEntity<ApiError> badRequest(ErrorCode code, String message, Map<String, Object> details) {
-        return ResponseEntity.badRequest().body(ApiError.of(code, message, details));
+        return respond(HttpStatus.BAD_REQUEST, ApiError.of(code, message, details));
+    }
+
+    private static ResponseEntity<ApiError> respond(HttpStatusCode status, ApiError body) {
+        recordOutcome(body.error().code());
+        return ResponseEntity.status(status).body(body);
+    }
+
+    /** Lets the access log line say why the request was turned away. */
+    private static void recordOutcome(ErrorCode code) {
+        RequestAttributes request = RequestContextHolder.getRequestAttributes();
+        if (request != null) {
+            request.setAttribute(RequestCorrelationFilter.OUTCOME_ATTRIBUTE, code.name(), RequestAttributes.SCOPE_REQUEST);
+        }
     }
 }

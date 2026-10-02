@@ -68,8 +68,47 @@ seatreserve:
       breaker-millis: ${REDIS_BREAKER_MS:5000}
 
 management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus,info
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
+        # Also serve the probes on the main port as /livez and /readyz.
+        add-additional-paths: true
+      group:
+        # Liveness: is the process healthy? Never depends on the database, or
+        # a database outage would make the platform restart every instance.
+        liveness:
+          include: livenessState
+        # Readiness: can we serve requests? Fails closed when Postgres is
+        # unreachable, so the load balancer stops routing to us.
+        readiness:
+          include: readinessState,database
   health:
+    # Replaced by DatabaseReadinessIndicator, which uses its own connection
+    # instead of competing with requests for the pool.
+    db:
+      enabled: false
     redis:
       # Redis is an optional cache: its outage must never mark the service
       # unhealthy or unready. Only the database is a hard dependency.
       enabled: false
+  metrics:
+    tags:
+      application: seat-reserve
+    distribution:
+      # Latency histograms, so p50/p95/p99 can be computed from the scrape.
+      percentiles-histogram:
+        http.server.requests: true
+
+logging:
+  structured:
+    format:
+      # JSON (Elastic Common Schema) everywhere, so local runs look exactly
+      # like production. Every line carries request_id, and user_id once
+      # authenticated. Set LOG_FORMAT=logstash for the Logstash layout.
+      console: ${LOG_FORMAT:ecs}

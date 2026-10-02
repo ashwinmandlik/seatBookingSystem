@@ -3,6 +3,7 @@ package io.seatreserve.common.db;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.seatreserve.reservation.ReservationDeclines.SeatsUnavailable;
 import java.sql.SQLException;
 import java.util.List;
@@ -18,7 +19,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 class TransactionRunnerTest {
 
-    private final TransactionRunner runner = new TransactionRunner(new TransactionTemplate(new NoOpTransactions()));
+    private final TransactionRunner runner = new TransactionRunner(new TransactionTemplate(new NoOpTransactions()),
+            new SimpleMeterRegistry());
 
     @Test
     void retriesADeadlockVictimUntilItSucceeds() {

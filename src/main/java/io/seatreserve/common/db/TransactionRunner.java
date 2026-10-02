@@ -1,5 +1,6 @@
 package io.seatreserve.common.db;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Supplier;
 import org.slf4j.Logger;
@@ -34,9 +35,11 @@ public class TransactionRunner {
     private static final Logger log = LoggerFactory.getLogger(TransactionRunner.class);
 
     private final TransactionTemplate tx;
+    private final MeterRegistry registry;
 
-    public TransactionRunner(TransactionTemplate tx) {
+    public TransactionRunner(TransactionTemplate tx, MeterRegistry registry) {
         this.tx = tx;
+        this.registry = registry;
     }
 
     public <T> T inTransaction(Supplier<T> work) {
@@ -49,6 +52,7 @@ public class TransactionRunner {
                 }
                 log.warn("Transient database failure, retrying (attempt {}/{}): {}", attempt, MAX_ATTEMPTS,
                         e.getMostSpecificCause().getMessage());
+                registry.counter("db.transaction.retries", "exception", e.getClass().getSimpleName()).increment();
                 backOff(attempt);
             }
         }

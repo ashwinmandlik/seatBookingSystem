@@ -1,6 +1,8 @@
 package io.seatreserve.reservation;
 
 import io.seatreserve.common.db.TransactionRunner;
+import io.seatreserve.common.error.DomainException;
+import io.seatreserve.observability.ReservationMetrics;
 import io.seatreserve.config.SeatReserveProperties;
 import io.seatreserve.reservation.ReservationDeclines.HoldExpired;
 import io.seatreserve.reservation.ReservationDeclines.IdempotencyKeyReused;
@@ -19,6 +21,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 /**
@@ -45,6 +49,8 @@ import org.springframework.stereotype.Service;
 @Service
 public class ReservationService {
 
+    private static final Logger log = LoggerFactory.getLogger(ReservationService.class);
+
     /** The outcome of a successful call. {@code replayed} means nothing new was written. */
     public record ReserveResult(Reservation reservation, boolean replayed) {
     }
@@ -57,11 +63,13 @@ public class ReservationService {
     private final SeatReleaser releaser;
     private final HotSeatGate hotSeats;
     private final TransactionRunner tx;
+    private final ReservationMetrics metrics;
     private final SeatReserveProperties props;
 
     public ReservationService(ShowService shows, IdempotencyRepository idempotency, QuotaRepository quotas,
                               SeatInventory seats, ReservationRepository reservations, SeatReleaser releaser,
-                              HotSeatGate hotSeats, TransactionRunner tx, SeatReserveProperties props) {
+                              HotSeatGate hotSeats, TransactionRunner tx, ReservationMetrics metrics,
+                              SeatReserveProperties props) {
         this.shows = shows;
         this.idempotency = idempotency;
         this.quotas = quotas;
@@ -70,10 +78,35 @@ public class ReservationService {
         this.releaser = releaser;
         this.hotSeats = hotSeats;
         this.tx = tx;
+        this.metrics = metrics;
         this.props = props;
     }
 
     public ReserveResult reserve(ReserveCommand cmd) {
+        try {
+            ReserveResult result = reserveGuarded(cmd);
+            Reservation r = result.reservation();
+            if (result.replayed()) {
+                metrics.replayed();
+            } else {
+                if (r.status() == ReservationStatus.HELD) {
+                    metrics.held();
+                } else {
+                    metrics.confirmed();
+                }
+                log.atInfo().addKeyValue("reservation_id", r.id()).addKeyValue("show_id", r.showId())
+                        .addKeyValue("seats", r.seats()).addKeyValue("status", r.status().json())
+                        .addKeyValue("amount_paise", r.amountPaise())
+                        .log("Reservation {} {}", r.id(), r.status().json());
+            }
+            return result;
+        } catch (DomainException declined) {
+            metrics.declined(declined);
+            throw declined;
+        }
+    }
+
+    private ReserveResult reserveGuarded(ReserveCommand cmd) {
         Show show = shows.require(cmd.showId());
         hotSeats.declineIfKnownTaken(show.id(), cmd.seats(), cmd.userId());
         return hotSeats.withSeats(show.id(), cmd.seats(), () -> {
@@ -147,10 +180,10 @@ public class ReservationService {
      * already-confirmed reservation is a no-op success, so clients can retry.
      */
     public Reservation confirm(UUID reservationId, String userId) {
-        return tx.inTransaction(() -> {
+        Transition t = tx.inTransaction(() -> {
             Reservation r = lockOwnedBy(reservationId, userId);
             return switch (r.status()) {
-                case CONFIRMED -> r;
+                case CONFIRMED -> new Transition(r, false);
                 case EXPIRED -> throw new HoldExpired(reservationId);
                 case CANCELLED -> throw new ReservationNotActive(reservationId, r.status());
                 case HELD -> {
@@ -164,10 +197,15 @@ public class ReservationService {
                         throw new IllegalStateException(
                                 "Hold " + reservationId + " confirmed " + changed + " of " + count);
                     }
-                    yield confirmed;
+                    yield new Transition(confirmed, true);
                 }
             };
         });
+        if (t.changed()) {
+            metrics.confirmed();
+            log.atInfo().addKeyValue("reservation_id", reservationId).log("Hold {} confirmed", reservationId);
+        }
+        return t.reservation();
     }
 
     /**
@@ -177,20 +215,30 @@ public class ReservationService {
      * seats were already released and may now belong to someone else.
      */
     public Reservation cancel(UUID reservationId, String userId) {
-        Reservation cancelled = tx.inTransaction(() -> {
+        Transition t = tx.inTransaction(() -> {
             Reservation r = lockOwnedBy(reservationId, userId);
             return switch (r.status()) {
-                case CANCELLED -> r;
+                case CANCELLED -> new Transition(r, false);
                 case EXPIRED -> throw new ReservationNotActive(reservationId, r.status());
                 case HELD, CONFIRMED -> {
                     releaser.release(r);
-                    yield reservations.updateStatus(reservationId, ReservationStatus.CANCELLED);
+                    yield new Transition(reservations.updateStatus(reservationId, ReservationStatus.CANCELLED), true);
                 }
             };
         });
-        // After commit: the seats are free again, so stop fast-failing them here.
-        hotSeats.forget(cancelled.showId(), cancelled.seats());
+        Reservation cancelled = t.reservation();
+        if (t.changed()) {
+            // After commit: the seats are free again, so stop fast-failing them.
+            hotSeats.forget(cancelled.showId(), cancelled.seats());
+            metrics.cancelled();
+            log.atInfo().addKeyValue("reservation_id", reservationId).addKeyValue("seats", cancelled.seats())
+                    .log("Reservation {} cancelled", reservationId);
+        }
         return cancelled;
+    }
+
+    /** A lifecycle call's result, and whether it changed anything (repeats are no-ops). */
+    private record Transition(Reservation reservation, boolean changed) {
     }
 
     private Reservation lockOwnedBy(UUID reservationId, String userId) {

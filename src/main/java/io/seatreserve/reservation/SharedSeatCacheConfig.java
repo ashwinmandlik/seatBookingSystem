@@ -2,6 +2,7 @@ package io.seatreserve.reservation;
 
 import io.lettuce.core.ClientOptions;
 import io.lettuce.core.ClientOptions.DisconnectedBehavior;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.seatreserve.config.SeatReserveProperties;
 import io.seatreserve.config.SeatReserveProperties.SharedCache;
 import java.time.Duration;
@@ -16,13 +17,14 @@ class SharedSeatCacheConfig {
 
     /** Redis when enabled, otherwise no shared layer: the service needs neither. */
     @Bean
-    SharedSeatCache sharedSeatCache(SeatReserveProperties props, ObjectProvider<StringRedisTemplate> redis) {
+    SharedSeatCache sharedSeatCache(SeatReserveProperties props, ObjectProvider<StringRedisTemplate> redis,
+                                    MeterRegistry registry) {
         SharedCache config = props.hotSeats().sharedCache();
         if (!props.hotSeats().enabled() || !config.enabled()) {
             return SharedSeatCache.NONE;
         }
         return new RedisSharedSeatCache(redis.getObject(), Duration.ofMillis(config.ttlMillis()),
-                Duration.ofMillis(config.breakerMillis()), System::nanoTime);
+                Duration.ofMillis(config.breakerMillis()), System::nanoTime, registry);
     }
 
     /**
