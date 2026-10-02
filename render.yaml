@@ -48,6 +48,13 @@ services:
         value: "1000"
       - key: SERVER_ACCEPT_COUNT
         value: "4000"
+      # Hot-seat cache: the 2 s default bounds staleness *across instances*. This
+      # service runs a single instance, where cancel and expiry clear entries
+      # immediately, so a sold seat can stay known-taken for the whole sale. At
+      # 2 s, half the live burst's "seat taken" answers fell back to the database
+      # path just to relearn what the cache had forgotten.
+      - key: HOT_SEATS_CACHE_TTL_MS
+        value: "600000"
       # Requests carry a ~300-byte JWT; 4 KB of headers is plenty and halves a buffer.
       - key: SERVER_MAXHTTPREQUESTHEADERSIZE
         value: "4KB"
