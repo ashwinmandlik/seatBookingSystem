@@ -39,6 +39,12 @@ public class RequestCorrelationFilter extends OncePerRequestFilter {
     /** Accept only ids that cannot inject anything into logs or headers. */
     private static final Pattern SAFE_ID = Pattern.compile("[A-Za-z0-9._-]{1,64}");
 
+    private final DeclineLogSampler sampler;
+
+    public RequestCorrelationFilter(DeclineLogSampler sampler) {
+        this.sampler = sampler;
+    }
+
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
@@ -52,15 +58,19 @@ public class RequestCorrelationFilter extends OncePerRequestFilter {
         try {
             chain.doFilter(request, response);
         } finally {
-            if (!isProbe(request)) {
-                Object outcome = request.getAttribute(OUTCOME_ATTRIBUTE);
-                access.atInfo()
+            Object outcome = request.getAttribute(OUTCOME_ATTRIBUTE);
+            int sampleRate = isProbe(request) ? 0 : sampler.decide(outcome);
+            if (sampleRate > 0) {
+                var line = access.atInfo()
                         .addKeyValue("method", request.getMethod())
                         .addKeyValue("path", request.getRequestURI())
                         .addKeyValue("status", response.getStatus())
                         .addKeyValue("outcome", outcome != null ? outcome : "ok")
-                        .addKeyValue("duration_ms", (System.nanoTime() - started) / 1_000_000)
-                        .log("{} {} -> {}", request.getMethod(), request.getRequestURI(), response.getStatus());
+                        .addKeyValue("duration_ms", (System.nanoTime() - started) / 1_000_000);
+                if (sampleRate > 1) {
+                    line = line.addKeyValue("sample_rate", sampleRate);   // this line stands for N declines
+                }
+                line.log("{} {} -> {}", request.getMethod(), request.getRequestURI(), response.getStatus());
             }
             MDC.clear();
         }
