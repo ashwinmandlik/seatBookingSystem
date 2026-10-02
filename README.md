@@ -270,6 +270,13 @@ ADMIN_KEY=… ./burst.sh https://seat-reserve-lrvt.onrender.com --scale 4 --time
 ```
 
 It needs **Java 21+** (a single-file program, `burst/Burst.java`, no dependencies), or falls back to **Docker**.
+
+**On Docker Desktop (Windows, macOS)** with a `localhost` target, it fires from inside the stack's Docker network
+(and says so). Docker Desktop forwards published ports through a userspace proxy that refuses connections
+when thousands open at once: fired from the host, ~1,100–1,500 of 5,770 requests fail to connect, never
+reach the app, and fail the run, while every answer that did arrive is correct. From inside the network,
+all 12 checks pass. `BURST_FROM_HOST=1` forces the host path. Linux Docker forwards in the kernel and is unaffected.
+
 It creates a fresh show and fires everything at the same instant:
 
 | Storm | Checks (the brief's correctness bar) |
