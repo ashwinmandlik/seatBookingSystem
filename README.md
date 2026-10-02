@@ -303,48 +303,54 @@ The burst is one self-contained Java file, [`burst/Burst.java`](burst/Burst.java
 
 **Ways to run it**
 
-1. **bash** (Linux, macOS, Git Bash or WSL on Windows), from the repo folder:
+Each command is on one line. Copy the block for your terminal: bash commands don't work in PowerShell, and the
+reverse.
+
+1. **bash**: macOS, Linux, or Git Bash / WSL on Windows. From the repo folder:
    ```bash
-   ./burst.sh http://localhost:8080                       # local stack
-   ADMIN_KEY='<admin key>' ./burst.sh https://seat-reserve-lrvt.onrender.com --scale 4 --timeout 100
+   # bash
+   ADMIN_KEY='<admin key>' ./burst.sh https://seat-reserve-lrvt.onrender.com --scale 4
+   ./burst.sh http://localhost:8080          # against a local stack (admin key: local-admin-key)
    ```
 
-2. **Any terminal with Java 21+** (PowerShell, cmd, bash, zsh), from the repo folder:
-   ```bash
-   java burst/Burst.java https://seat-reserve-lrvt.onrender.com --scale 4 --timeout 100 --admin-key '<admin key>'
+2. **Any terminal with Java 21+**: PowerShell, cmd, bash, zsh. From the repo folder:
+   ```powershell
+   # PowerShell, bash, zsh  (in Windows cmd, put the key in double quotes)
+   java burst/Burst.java https://seat-reserve-lrvt.onrender.com --scale 4 --admin-key '<admin key>'
    ```
-   In Windows cmd, use double quotes around the key instead of single quotes.
 
 3. **From any folder:** give the file's full path, replacing `<repo>` with wherever you cloned it.
    ```bash
+   # bash
    java <repo>/burst/Burst.java https://seat-reserve-lrvt.onrender.com --admin-key '<admin key>'
-   # e.g. java ~/projects/seatBookingSystem/burst/Burst.java …
    ```
    ```powershell
+   # PowerShell (it doesn't expand ~ for java; use $HOME, e.g. $HOME\projects\seatBookingSystem)
    java <repo>\burst\Burst.java https://seat-reserve-lrvt.onrender.com --admin-key '<admin key>'
-   # e.g. java $HOME\projects\seatBookingSystem\burst\Burst.java …   (PowerShell doesn't expand ~ for java; use $HOME)
    ```
-
    If Java answers `ClassNotFoundException: …Burst.java`, it didn't find the file at that path (Java then treats
    the argument as a class name). Check the path, or `cd` into the repo and use `burst/Burst.java`.
 
-4. **Without cloning the repo:** download just the one file, then run it.
+4. **Without cloning the repo:** download the one file, then run it.
    ```bash
+   # bash
    curl -fsSLO https://raw.githubusercontent.com/ashwinmandlik/seatBookingSystem/main/burst/Burst.java
-   java Burst.java https://seat-reserve-lrvt.onrender.com --scale 4 --timeout 100 --admin-key '<admin key>'
+   java Burst.java https://seat-reserve-lrvt.onrender.com --scale 4 --admin-key '<admin key>'
    ```
    ```powershell
+   # PowerShell
    Invoke-WebRequest https://raw.githubusercontent.com/ashwinmandlik/seatBookingSystem/main/burst/Burst.java -OutFile Burst.java
-   java Burst.java https://seat-reserve-lrvt.onrender.com --scale 4 --timeout 100 --admin-key '<admin key>'
+   java Burst.java https://seat-reserve-lrvt.onrender.com --scale 4 --admin-key '<admin key>'
    ```
 
-5. **Docker only, no Java installed:** `./burst.sh` switches to Docker by itself (including in Git Bash).
-   To call Docker directly, from the repo folder (Linux, macOS, or PowerShell):
+5. **Docker only, no Java installed:** `./burst.sh` switches to Docker by itself (Git Bash included). To call
+   Docker directly, from the repo folder:
    ```bash
-   docker run --rm -v "$PWD/burst:/burst:ro" eclipse-temurin:21-jdk \
-     java /burst/Burst.java https://seat-reserve-lrvt.onrender.com --admin-key '<admin key>'
+   # bash (macOS, Linux)
+   docker run --rm -v "$PWD/burst:/burst:ro" eclipse-temurin:21-jdk java /burst/Burst.java https://seat-reserve-lrvt.onrender.com --admin-key '<admin key>'
    ```
    ```powershell
+   # PowerShell
    docker run --rm -v "${PWD}\burst:/burst:ro" eclipse-temurin:21-jdk java /burst/Burst.java https://seat-reserve-lrvt.onrender.com --admin-key '<admin key>'
    ```
    For a service running on your own machine, add `--network host` on Linux. On Docker Desktop, use `./burst.sh`
