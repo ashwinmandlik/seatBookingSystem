@@ -1,0 +1,42 @@
+# Render Blueprint (free plan): Render dashboard -> New -> Blueprint -> this repo.
+# Database: Neon free (Postgres), same region as the service (AWS Singapore).
+# You are prompted once for DATABASE_URL: paste Neon's *direct* (non-pooled)
+# connection string, e.g. postgresql://user:pass@ep-xxx.ap-southeast-1.aws.neon.tech/neondb?sslmode=require
+services:
+  - type: web
+    name: seat-reserve
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    # Liveness, not readiness: Render polls this constantly, and a database
+    # check here would keep Neon awake 24/7 (and burn its free compute hours).
+    # /health/ready still checks Postgres and fails closed for anyone who asks.
+    healthCheckPath: /health/live
+    autoDeployTrigger: commit
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ADMIN_KEY
+        generateValue: true
+
+      # Neon free pauses when idle and bills awake time: leave it alone when idle.
+      - key: IDLE_AWARE_ENABLED
+        value: "true"
+      - key: DB_POOL_SIZE
+        value: "10"
+      - key: DB_MIN_IDLE
+        value: "0"
+      - key: DB_IDLE_TIMEOUT_MS
+        value: "60000"
+
+      # Free instance: 512 MB RAM and a fraction of a CPU.
+      - key: JAVA_TOOL_OPTIONS
+        value: "-XX:MaxRAMPercentage=60 -XX:MaxMetaspaceSize=128m -XX:ReservedCodeCacheSize=48m -Xss512k -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -XX:+ExitOnOutOfMemoryError"
+      - key: SERVER_MAX_CONNECTIONS
+        value: "4000"
+      - key: SERVER_ACCEPT_COUNT
+        value: "1000"

@@ -1,0 +1,42 @@
+# Keeps the Render free instance awake: it sleeps after 15 minutes without
+# inbound traffic and takes ~1 minute to wake. Pings /health/live, which never
+# touches the database, so Neon can still pause when the service is idle.
+#
+# Set the repository variable LIVE_URL (Settings -> Secrets and variables ->
+# Actions -> Variables), e.g. https://seat-reserve.onrender.com
+name: keep-warm
+
+on:
+  schedule:
+    # Every 10 minutes, around the clock.
+    - cron: "*/10 * * * *"
+    # Night off instead (awake ~05:30-23:30 IST, i.e. 00:00-17:59 UTC):
+    # replace the line above with
+    # - cron: "*/10 0-17 * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Ping liveness
+        env:
+          URL: ${{ vars.LIVE_URL }}
+        run: |
+          if [ -z "$URL" ]; then
+            echo "::notice::LIVE_URL is not set; nothing to ping"
+            exit 0
+          fi
+          # A sleeping instance needs up to ~1 minute to wake: allow for it.
+          for attempt in 1 2 3; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 90 "$URL/health/live" || true)
+            if [ "$code" = "200" ]; then
+              echo "up (attempt $attempt)"
+              exit 0
+            fi
+            echo "attempt $attempt: HTTP $code"
+            sleep 20
+          done
+          echo "::error::$URL/health/live did not answer 200"
+          exit 1
