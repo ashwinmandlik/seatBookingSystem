@@ -1,5 +1,7 @@
 # Seat Reservation at Scale
 
+[![ci](https://github.com/ashwinmandlik/seatBookingSystem/actions/workflows/ci.yml/badge.svg)](https://github.com/ashwinmandlik/seatBookingSystem/actions/workflows/ci.yml)
+
 A JSON API that sells assigned seats for a show and stays correct under an on-sale stampede: a seat is
 never sold twice, a user never exceeds their limit, and a retried request never reserves twice. Every
 decision is made by PostgreSQL (row locks taken in one global order, conditional updates, and
@@ -14,6 +16,7 @@ the live URL.
 | Logs | JSON on stdout (Render log viewer); screen recording of live logs under a burst: *(link in submission)* |
 | Burst | `./burst.sh https://seat-reserve-lrvt.onrender.com` (needs the admin key, see [Burst test](#burst-test)) |
 | Design write-up | [WRITEUP.md](WRITEUP.md) |
+| Clean-clone CI | [`ci`](.github/workflows/ci.yml) on every push, from a fresh checkout: `./gradlew build` and `./gradlew dev` + the Postman suite on Linux, macOS (Apple Silicon) and Windows; `docker compose up --build`, then the Postman suite, `./burst.sh` (all 12 checks) and readiness failing closed with Postgres stopped |
 
 ### For reviewers: pointing your own load tool at it
 

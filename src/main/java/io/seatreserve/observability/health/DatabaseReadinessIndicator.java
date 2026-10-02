@@ -11,7 +11,7 @@ import org.springframework.stereotype.Component;
 
 /**
  * Readiness: can we reach Postgres right now? Reported as "database" in
- * /readyz and /actuator/health.
+ * /health/ready and /actuator/health.
  *
  * <p>Uses its own single connection, separate from the request pool. During
  * an on-sale burst every pooled connection is busy; a probe that borrowed one

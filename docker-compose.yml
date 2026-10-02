@@ -1,5 +1,5 @@
 # Full stack, built and run exactly as deployed:  docker compose up --build
-# API on http://localhost:8080  (/readyz, /actuator/prometheus)
+# API on http://localhost:8080  (/health/ready, /actuator/prometheus)
 services:
   app:
     build: .
