@@ -40,14 +40,28 @@ services:
       # Heap 65%: non-heap measured at ~100 MB (metaspace, code cache, stacks).
       - key: JAVA_TOOL_OPTIONS
         value: "-XX:MaxRAMPercentage=65 -XX:MaxMetaspaceSize=128m -XX:ReservedCodeCacheSize=48m -Xss512k -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -XX:+ExitOnOutOfMemoryError"
-      # Every accepted connection costs ~115 KB of heap (Tomcat buffers,
-      # measured by heap histogram); 2,000 queued requests filled the heap and
-      # the JVM exited. Accept at most 1,000 (~115 MB) and let the rest wait in
-      # the kernel's accept queue, which costs almost nothing and is FIFO.
+      # Connections: always accept, and make waiting cheap.
+      # Render restarts the instance when its proxy can't open a TCP connection
+      # ("dial tcp ...:10000: i/o timeout"). Capping accepted connections at
+      # 1,000 let the kernel's accept queue overflow in a long burst, and that
+      # happened twice. With virtual threads every accepted connection was
+      # processed at once and parked holding ~115 KB of request buffers, so
+      # the cap couldn't simply be raised. Now a fixed pool of 32 platform
+      # threads does the work; waiting connections stay small queued tasks,
+      # so thousands can be accepted at once (measured with ~1,000 waiting:
+      # 47 MB of old generation, 6 ms to open a new connection, and ~8% less
+      # CPU per request than with virtual threads).
+      - key: SPRING_THREADS_VIRTUAL_ENABLED
+        value: "false"
+      - key: SERVER_TOMCAT_THREADS_MAX
+        value: "32"
       - key: SERVER_MAX_CONNECTIONS
-        value: "1000"
+        value: "8000"
       - key: SERVER_ACCEPT_COUNT
         value: "4000"
+      # 2 KB socket buffers each way instead of 8 KB: requests and responses are a few hundred bytes.
+      - key: SEATRESERVE_TOMCAT_SOCKETBUFFERBYTES
+        value: "2048"
       # Hot-seat cache: the 2 s default bounds staleness *across instances*. This
       # service runs a single instance, where cancel and expiry clear entries
       # immediately, so a sold seat can stay known-taken for the whole sale. At

@@ -59,6 +59,10 @@ seatreserve:
     # Every instance runs the sweeper; SKIP LOCKED splits the work safely.
     enabled: ${HOLD_SWEEPER_ENABLED:true}
     interval-ms: ${HOLD_SWEEP_INTERVAL_MS:1000}
+  tomcat:
+    # Per-connection socket buffers (Tomcat default 8 KB each way). Smaller
+    # buffers make thousands of open, waiting connections cheap.
+    socket-buffer-bytes: ${SEATRESERVE_TOMCAT_SOCKETBUFFERBYTES:8192}
   bulkhead:
     # Write requests processed at once; the rest wait in a fair queue, parked
     # before auth/parsing. Keeps a small CPU focused and health checks fast.
