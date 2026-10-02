@@ -55,6 +55,9 @@ services:
       # path just to relearn what the cache had forgotten.
       - key: HOT_SEATS_CACHE_TTL_MS
         value: "600000"
+      # Cap the cache at ~20 MB on a 512 MB instance (a fully sold 7,886-seat show is ~1.6 MB).
+      - key: HOT_SEATS_MAX_ENTRIES
+        value: "100000"
       # Requests carry a ~300-byte JWT; 4 KB of headers is plenty and halves a buffer.
       - key: SERVER_MAXHTTPREQUESTHEADERSIZE
         value: "4KB"

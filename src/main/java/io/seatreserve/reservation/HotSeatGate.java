@@ -45,8 +45,8 @@ import org.springframework.stereotype.Component;
 public class HotSeatGate {
 
     private static final int STRIPES = 8192;
-    /** Safety valve against unbounded growth; entries are tiny and short-lived. */
-    private static final int MAX_ENTRIES = 500_000;
+    /** Default safety valve against unbounded growth (~200 bytes per entry). */
+    static final int DEFAULT_MAX_ENTRIES = 500_000;
 
     private record SeatKey(UUID showId, String label) {
     }
@@ -57,16 +57,23 @@ public class HotSeatGate {
     private final ReentrantLock[] stripes = new ReentrantLock[STRIPES];
     private final Map<SeatKey, Taken> taken = new ConcurrentHashMap<>();
     private final boolean enabled;
+    private final int maxEntries;
     private final long ttlNanos;
     private final LongSupplier nanoClock;
     private final SharedSeatCache shared;
 
     @Autowired
     public HotSeatGate(SeatReserveProperties props, SharedSeatCache shared) {
-        this(props.hotSeats().enabled(), props.hotSeats().cacheTtlMillis() * 1_000_000L, System::nanoTime, shared);
+        this(props.hotSeats().enabled(), props.hotSeats().cacheTtlMillis() * 1_000_000L, System::nanoTime, shared,
+                props.hotSeats().maxEntries());
     }
 
     HotSeatGate(boolean enabled, long ttlNanos, LongSupplier nanoClock, SharedSeatCache shared) {
+        this(enabled, ttlNanos, nanoClock, shared, DEFAULT_MAX_ENTRIES);
+    }
+
+    HotSeatGate(boolean enabled, long ttlNanos, LongSupplier nanoClock, SharedSeatCache shared, int maxEntries) {
+        this.maxEntries = maxEntries;
         this.enabled = enabled;
         this.ttlNanos = ttlNanos;
         this.nanoClock = nanoClock;
@@ -186,7 +193,7 @@ public class HotSeatGate {
         if (ownerByLabel.isEmpty()) {
             return;
         }
-        if (taken.size() >= MAX_ENTRIES) {
+        if (taken.size() >= maxEntries) {
             taken.clear();
         }
         long expiresAt = nanoClock.getAsLong() + ttlNanos;

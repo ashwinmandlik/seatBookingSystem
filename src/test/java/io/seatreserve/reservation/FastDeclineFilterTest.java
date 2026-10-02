@@ -113,6 +113,6 @@ class FastDeclineFilterTest {
 
     private static SeatReserveProperties props() {
         return new SeatReserveProperties(300, SECRET, "admin",
-                new HotSeats(true, 2000, new SharedCache(false, 5000, 5000)), new IdleAware(false, 60));
+                new HotSeats(true, 2000, new SharedCache(false, 5000, 5000), 500_000), new IdleAware(false, 60));
     }
 }

@@ -38,11 +38,13 @@ public record SeatReserveProperties(
      * @param enabled        turn the gate and caches off entirely (correctness does not depend on them)
      * @param cacheTtlMillis how long a local "seat is taken" entry is trusted
      * @param sharedCache    optional Redis layer shared by all instances
+     * @param maxEntries     safety cap on locally cached seats (~200 bytes each); cleared when reached
      */
     public record HotSeats(
             @DefaultValue("true") boolean enabled,
             @DefaultValue("2000") @Min(1) long cacheTtlMillis,
-            @Valid @DefaultValue SharedCache sharedCache) {
+            @Valid @DefaultValue SharedCache sharedCache,
+            @DefaultValue("500000") @Min(1) int maxEntries) {
     }
 
     /**
