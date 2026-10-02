@@ -24,6 +24,7 @@ import java.util.Set;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 
 /**
@@ -102,7 +103,11 @@ public class ReservationService {
                 } else {
                     metrics.confirmed();
                 }
-                log.atInfo().addKeyValue("reservation_id", r.id()).addKeyValue("show_id", r.showId())
+                // One JSON line per request is the budget on a small CPU (each line costs ~0.6 ms):
+                // the reservation id rides on the request's access-log line via the MDC, and
+                // the full detail line is DEBUG.
+                MDC.put("reservation_id", r.id().toString());
+                log.atDebug().addKeyValue("reservation_id", r.id()).addKeyValue("show_id", r.showId())
                         .addKeyValue("seats", r.seats()).addKeyValue("status", r.status().json())
                         .addKeyValue("amount_paise", r.amountPaise())
                         .log("Reservation {} {}", r.id(), r.status().json());

@@ -47,12 +47,14 @@ class StructuredLogTest extends IntegrationTest {
                 .andExpect(status().isConflict());
 
         List<JsonNode> alice = linesFor(output, "trace-alice-1");
-        assertThat(alice).as("business log + access log").hasSizeGreaterThanOrEqualTo(2);
+        assertThat(alice).as("one access line per request").isNotEmpty();
         assertThat(alice).allSatisfy(line -> assertThat(line.path("user_id").asText()).isEqualTo("alice"));
         assertThat(alice).anySatisfy(line -> {
             assertThat(line.path("log").path("logger").asText()).isEqualTo("access");
             assertThat(line.path("status").asInt()).isEqualTo(201);
             assertThat(line.path("duration_ms").isNumber()).isTrue();
+            // the reservation detail rides on the access line rather than a second line
+            assertThat(line.path("reservation_id").asText()).isNotBlank();
         });
 
         assertThat(linesFor(output, "trace-bob-1")).anySatisfy(line -> {
