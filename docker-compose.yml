@@ -20,7 +20,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1g   # same as the Fly VM
+          memory: 1g   # headroom for the JVM; the live Render instance has 512 MB
 
   postgres:
     image: postgres:16-alpine
@@ -28,8 +28,8 @@ services:
       POSTGRES_DB: seatreserve
       POSTGRES_USER: seatreserve
       POSTGRES_PASSWORD: seatreserve
-    ports:
-      - "5432:5432"
+    # Not published on the host: the app reaches it on the compose network, and
+    # a local Postgres already on 5432 would otherwise block `docker compose up`.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U seatreserve -d seatreserve"]
       interval: 2s
@@ -39,8 +39,6 @@ services:
   # Optional shared hot-seat cache. The service stays correct if this is down.
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 2s
