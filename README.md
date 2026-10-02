@@ -256,7 +256,9 @@ ends with one access line showing its outcome:
 {"log":{"level":"INFO","logger":"access"},"message":"POST /shows/…/reserve -> 409","request_id":"…",
  "user_id":"bob","status":409,"outcome":"SEAT_TAKEN","duration_ms":10}
 ```
-Live view: **`/logs`** on the deployment (Dozzle, basic auth).
+**Live logs:** on the Render deployment, logs are in Render's per-account log viewer, so a screen recording of
+them under a burst is linked in the submission. Locally: `docker compose logs -f app`. On the self-hosted VM
+setup ([below](#alternative-any-docker-host-same-containers-as-local)), Dozzle serves them at `/logs` (basic auth).
 
 ---
 
