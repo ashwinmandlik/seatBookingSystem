@@ -19,6 +19,15 @@ spring:
       connection-timeout: ${DB_CONNECTION_TIMEOUT_MS:60000}
   flyway:
     enabled: true
+  data:
+    redis:
+      # Optional shared hot-seat cache; only used when REDIS_ENABLED=true.
+      url: ${REDIS_URL:redis://localhost:6379}
+      # A cache that is slower than the database is useless: give up fast.
+      timeout: ${REDIS_TIMEOUT:100ms}
+      connect-timeout: 500ms
+      repositories:
+        enabled: false
   jackson:
     property-naming-strategy: SNAKE_CASE
     default-property-inclusion: non_null
@@ -51,3 +60,16 @@ seatreserve:
     # database still makes every decision to sell.
     enabled: ${HOT_SEATS_ENABLED:true}
     cache-ttl-millis: ${HOT_SEATS_CACHE_TTL_MS:2000}
+    shared-cache:
+      # Redis L2 shared by all instances. Fails open: if Redis is down or
+      # slow, requests skip it (circuit breaker) and the database decides.
+      enabled: ${REDIS_ENABLED:false}
+      ttl-millis: ${REDIS_CACHE_TTL_MS:5000}
+      breaker-millis: ${REDIS_BREAKER_MS:5000}
+
+management:
+  health:
+    redis:
+      # Redis is an optional cache: its outage must never mark the service
+      # unhealthy or unready. Only the database is a hard dependency.
+      enabled: false

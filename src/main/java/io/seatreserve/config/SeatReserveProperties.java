@@ -27,10 +27,25 @@ public record SeatReserveProperties(
         @Valid @DefaultValue HotSeats hotSeats) {
 
     /**
-     * @param enabled        turn the gate and cache off entirely (correctness does not depend on them)
-     * @param cacheTtlMillis how long a "seat is taken" entry is trusted; bounds staleness across instances
+     * @param enabled        turn the gate and caches off entirely (correctness does not depend on them)
+     * @param cacheTtlMillis how long a local "seat is taken" entry is trusted
+     * @param sharedCache    optional Redis layer shared by all instances
      */
-    public record HotSeats(@DefaultValue("true") boolean enabled, @DefaultValue("2000") @Min(1) long cacheTtlMillis) {
+    public record HotSeats(
+            @DefaultValue("true") boolean enabled,
+            @DefaultValue("2000") @Min(1) long cacheTtlMillis,
+            @Valid @DefaultValue SharedCache sharedCache) {
+    }
+
+    /**
+     * @param enabled       use Redis as a shared L2 cache
+     * @param ttlMillis     how long a shared entry lives; the worst-case staleness bound
+     * @param breakerMillis how long to bypass Redis after an error
+     */
+    public record SharedCache(
+            @DefaultValue("false") boolean enabled,
+            @DefaultValue("5000") @Min(1) long ttlMillis,
+            @DefaultValue("5000") @Min(1) long breakerMillis) {
     }
 
     public Duration holdTtl() {

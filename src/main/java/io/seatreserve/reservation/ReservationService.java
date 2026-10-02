@@ -28,7 +28,8 @@ import org.springframework.stereotype.Service;
  * database transaction that makes the actual decision:
  *
  * <pre>
- *   fast-fail   seat known taken by someone else?   -> 409, no database   (HotSeatGate)
+ *   fast-fail   seat known taken by someone else?   -> 409, no database
+ *               (local map, then the optional shared Redis cache)          (HotSeatGate)
  *   gate        wait in memory per seat, not on a row lock holding a connection
  *   retry       transient database failures re-run the whole transaction
  *   transaction READ COMMITTED, locks in one global order:
@@ -77,7 +78,7 @@ public class ReservationService {
         hotSeats.declineIfKnownTaken(show.id(), cmd.seats(), cmd.userId());
         return hotSeats.withSeats(show.id(), cmd.seats(), () -> {
             // Whoever held the gate before us may have just sold the seat.
-            hotSeats.declineIfKnownTaken(show.id(), cmd.seats(), cmd.userId());
+            hotSeats.declineIfKnownTakenLocally(show.id(), cmd.seats(), cmd.userId());
             try {
                 ReserveResult result = tx.inTransaction(() -> reserveInTransaction(show, cmd));
                 if (!result.replayed()) {

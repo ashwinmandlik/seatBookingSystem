@@ -25,7 +25,7 @@ class HotSeatGateTest {
     private static final long TTL = Duration.ofSeconds(2).toNanos();
 
     private final AtomicLong now = new AtomicLong(1_000_000_000L);
-    private final HotSeatGate gate = new HotSeatGate(true, TTL, now::get);
+    private final HotSeatGate gate = new HotSeatGate(true, TTL, now::get, SharedSeatCache.NONE);
     private final UUID show = UUID.randomUUID();
 
     @Test
@@ -74,7 +74,7 @@ class HotSeatGateTest {
 
     @Test
     void disabledGateNeverDeclines() {
-        HotSeatGate off = new HotSeatGate(false, TTL, now::get);
+        HotSeatGate off = new HotSeatGate(false, TTL, now::get, SharedSeatCache.NONE);
         off.markTaken(show, Map.of("A1", "alice"));
 
         assertThatCode(() -> off.declineIfKnownTaken(show, List.of("A1"), "bob")).doesNotThrowAnyException();

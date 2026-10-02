@@ -30,12 +30,16 @@ import org.springframework.stereotype.Component;
  *       connection while blocked on a row lock.</li>
  * </ol>
  *
+ * <p>The known-taken cache has two levels: L1 is this instance's map
+ * (nanoseconds), L2 is an optional {@link SharedSeatCache} such as Redis
+ * (about a millisecond, shared by every instance). The gate is always local:
+ * its whole point is to wait without a network call or a database connection.
+ *
  * <p><b>Correctness never depends on this class.</b> It can only decline,
  * never grant: every success is still decided by the database transaction.
  * A stale entry (e.g. a seat cancelled on another instance) can at worst
- * decline a just-freed seat until the entry's short TTL lapses. Each app
- * instance has its own gate and cache; across instances the database row
- * locks still arbitrate.
+ * decline a just-freed seat until the entry's short TTL lapses; across
+ * instances the database row locks still arbitrate.
  */
 @Component
 public class HotSeatGate {
@@ -55,16 +59,18 @@ public class HotSeatGate {
     private final boolean enabled;
     private final long ttlNanos;
     private final LongSupplier nanoClock;
+    private final SharedSeatCache shared;
 
     @Autowired
-    public HotSeatGate(SeatReserveProperties props) {
-        this(props.hotSeats().enabled(), props.hotSeats().cacheTtlMillis() * 1_000_000L, System::nanoTime);
+    public HotSeatGate(SeatReserveProperties props, SharedSeatCache shared) {
+        this(props.hotSeats().enabled(), props.hotSeats().cacheTtlMillis() * 1_000_000L, System::nanoTime, shared);
     }
 
-    HotSeatGate(boolean enabled, long ttlNanos, LongSupplier nanoClock) {
+    HotSeatGate(boolean enabled, long ttlNanos, LongSupplier nanoClock, SharedSeatCache shared) {
         this.enabled = enabled;
         this.ttlNanos = ttlNanos;
         this.nanoClock = nanoClock;
+        this.shared = shared;
         for (int i = 0; i < STRIPES; i++) {
             stripes[i] = new ReentrantLock();
         }
@@ -72,28 +78,65 @@ public class HotSeatGate {
 
     /**
      * Declines immediately if any requested seat is known to be taken by
-     * someone else. If the requester owns one of the seats, the database must
-     * decide: the request may be an idempotent retry that should replay.
+     * someone else, checking this instance's map first and the shared cache
+     * only for seats the map does not know. If the requester owns one of the
+     * seats, the database must decide: the request may be an idempotent retry
+     * that should replay.
      */
     public void declineIfKnownTaken(UUID showId, List<String> labels, String userId) {
         if (!enabled) {
             return;
         }
+        Lookup local = lookupLocal(showId, labels, userId);
+        if (local.ownedByRequester()) {
+            return;
+        }
+        if (local.takenByOthers().isEmpty() && !local.unknown().isEmpty()) {
+            Map<String, String> remote = shared.owners(showId, local.unknown());
+            if (remote.containsValue(userId)) {
+                return;
+            }
+            rememberLocally(showId, remote);
+            local.takenByOthers().addAll(remote.keySet());
+        }
+        if (!local.takenByOthers().isEmpty()) {
+            throw new SeatsUnavailable(local.takenByOthers().stream().sorted().toList(), Map.of(), true);
+        }
+    }
+
+    /**
+     * Local-only re-check, used after waiting at the gate: the request that held
+     * the gate before us wrote its outcome to this instance's map, so another
+     * network round trip to the shared cache would add nothing.
+     */
+    public void declineIfKnownTakenLocally(UUID showId, List<String> labels, String userId) {
+        if (!enabled) {
+            return;
+        }
+        Lookup local = lookupLocal(showId, labels, userId);
+        if (!local.ownedByRequester() && !local.takenByOthers().isEmpty()) {
+            throw new SeatsUnavailable(local.takenByOthers(), Map.of(), true);
+        }
+    }
+
+    private record Lookup(boolean ownedByRequester, List<String> takenByOthers, List<String> unknown) {
+    }
+
+    private Lookup lookupLocal(UUID showId, List<String> labels, String userId) {
         long now = nanoClock.getAsLong();
         List<String> takenByOthers = new ArrayList<>();
+        List<String> unknown = new ArrayList<>();
         for (String label : labels) {
             Taken t = taken.get(new SeatKey(showId, label));
             if (t == null || t.expiresAtNanos() - now <= 0) {
-                continue;
+                unknown.add(label);
+            } else if (t.ownerId().equals(userId)) {
+                return new Lookup(true, List.of(), List.of());
+            } else {
+                takenByOthers.add(label);
             }
-            if (t.ownerId().equals(userId)) {
-                return;
-            }
-            takenByOthers.add(label);
         }
-        if (!takenByOthers.isEmpty()) {
-            throw new SeatsUnavailable(takenByOthers, Map.of(), true);
-        }
+        return new Lookup(false, takenByOthers, unknown);
     }
 
     /**
@@ -121,9 +164,26 @@ public class HotSeatGate {
         }
     }
 
-    /** Records seats as taken. Call only after the deciding transaction committed. */
+    /** Records seats as taken, locally and shared. Call only after the deciding transaction committed. */
     public void markTaken(UUID showId, Map<String, String> ownerByLabel) {
         if (!enabled || ownerByLabel.isEmpty()) {
+            return;
+        }
+        rememberLocally(showId, ownerByLabel);
+        shared.markTaken(showId, ownerByLabel);
+    }
+
+    /** Forgets released seats (cancel or expiry), here and, via the shared cache, on every instance. */
+    public void forget(UUID showId, List<String> labels) {
+        if (!enabled) {
+            return;
+        }
+        labels.forEach(label -> taken.remove(new SeatKey(showId, label)));
+        shared.forget(showId, labels);
+    }
+
+    private void rememberLocally(UUID showId, Map<String, String> ownerByLabel) {
+        if (ownerByLabel.isEmpty()) {
             return;
         }
         if (taken.size() >= MAX_ENTRIES) {
@@ -131,14 +191,6 @@ public class HotSeatGate {
         }
         long expiresAt = nanoClock.getAsLong() + ttlNanos;
         ownerByLabel.forEach((label, owner) -> taken.put(new SeatKey(showId, label), new Taken(owner, expiresAt)));
-    }
-
-    /** Forgets seats that were released (cancel or expiry) on this instance. */
-    public void forget(UUID showId, List<String> labels) {
-        if (!enabled) {
-            return;
-        }
-        labels.forEach(label -> taken.remove(new SeatKey(showId, label)));
     }
 
     @Scheduled(fixedDelay = 10_000)

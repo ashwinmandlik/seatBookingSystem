@@ -23,6 +23,8 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-validation'
     implementation 'org.springframework.boot:spring-boot-starter-actuator'
     implementation 'org.springframework.boot:spring-boot-starter-oauth2-resource-server'
+    // Optional shared hot-seat cache (L2). The service is fully correct without it.
+    implementation 'org.springframework.boot:spring-boot-starter-data-redis'
 
     implementation 'org.flywaydb:flyway-core'
     implementation 'org.flywaydb:flyway-database-postgresql'
@@ -34,6 +36,8 @@ dependencies {
     // actual row locks, and no Docker daemon is needed to run them.
     testImplementation 'io.zonky.test:embedded-postgres:2.2.2'
     testImplementation enforcedPlatform('io.zonky.test.postgres:embedded-postgres-binaries-bom:16.15.0')
+    // Real redis-server binaries for the shared-cache tests, again without Docker.
+    testImplementation 'com.github.codemonstur:embedded-redis:1.4.4'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
