@@ -59,6 +59,16 @@ services:
         value: "8000"
       - key: SERVER_ACCEPT_COUNT
         value: "4000"
+      # Keep-alive: Render's proxy reuses connections to us. Tomcat closes a
+      # connection after 100 requests or 20 s idle by default; if the proxy
+      # sends on a connection at the moment Tomcat closes it, the request is
+      # reset and Cloudflare reports 520 (2 of 23,080 in the last live burst,
+      # both answered by the app). The app now never closes on request count
+      # and stays open longer than the proxy, so the proxy closes first.
+      - key: SERVER_TOMCAT_MAXKEEPALIVEREQUESTS
+        value: "-1"
+      - key: SERVER_TOMCAT_KEEPALIVETIMEOUT
+        value: "120s"
       # 2 KB socket buffers each way instead of 8 KB: requests and responses are a few hundred bytes.
       - key: SEATRESERVE_TOMCAT_SOCKETBUFFERBYTES
         value: "2048"
