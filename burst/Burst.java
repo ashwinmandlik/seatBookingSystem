@@ -52,7 +52,7 @@ public class Burst {
     static int scale = 1;
     static int concurrency = 2000;
     static int perUserLimit = 4;
-    static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(60);
+    static Duration REQUEST_TIMEOUT = Duration.ofSeconds(60);
     static HttpClient http;
 
     enum Scenario {
@@ -682,7 +682,7 @@ public class Burst {
 
     static void parseArgs(String[] args) {
         if (args.length == 0 || args[0].startsWith("-")) {
-            System.err.println("usage: java burst/Burst.java BASE_URL [--scale N] [--concurrency N] [--admin-key KEY]");
+            System.err.println("usage: java burst/Burst.java BASE_URL [--scale N] [--concurrency N] [--timeout SECONDS] [--admin-key KEY]");
             System.exit(2);
         }
         base = args[0].replaceAll("/+$", "");
@@ -691,6 +691,7 @@ public class Burst {
                 case "--scale" -> scale = Integer.parseInt(args[++i]);
                 case "--concurrency" -> concurrency = Integer.parseInt(args[++i]);
                 case "--admin-key" -> adminKey = args[++i];
+                case "--timeout" -> REQUEST_TIMEOUT = Duration.ofSeconds(Long.parseLong(args[++i]));
                 default -> {
                     System.err.println("unknown option " + args[i]);
                     System.exit(2);

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # One-command on-sale stampede against a running seat-reserve service.
 #
-#   ./burst.sh <BASE_URL> [--scale N] [--concurrency N] [--admin-key KEY]
+#   ./burst.sh <BASE_URL> [--scale N] [--concurrency N] [--timeout SECONDS] [--admin-key KEY]
 #
 #   ./burst.sh http://localhost:8080
-#   ADMIN_KEY=... ./burst.sh https://seat-reserve.fly.dev --scale 4      # ~23k requests
+#   ADMIN_KEY=... ./burst.sh https://seat-reserve-lrvt.onrender.com --scale 4 --timeout 100   # ~23k requests
 #
 # Uses a local JDK 21+ if there is one, otherwise runs the same program in a
 # Docker JDK image. Exit code: 0 all checks passed, 1 a check failed, 2 setup failed.
