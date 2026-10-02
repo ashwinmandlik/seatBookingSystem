@@ -62,7 +62,7 @@ no ORM, so the atomic statements are visible) · Micrometer/Prometheus · Docker
 | Call the **live URL** | nothing (curl / your load tool) | — |
 | `docker compose up --build` | **Docker** | JDK, Gradle, Postgres and Redis all run in containers. Only port 8080 is published, so a local Postgres on 5432 doesn't conflict |
 | `./gradlew dev` / `build` / `test` | **any JDK 17+** | Gradle downloads itself and, if needed, JDK 21; tests start real Postgres/Redis binaries in-process (Linux, macOS Intel/Apple Silicon, Windows), so no database and no Docker |
-| `./burst.sh <URL>` | **Java 21+ or Docker**, and bash (Git Bash/WSL on Windows) | or run `java burst/Burst.java <URL>` directly |
+| `./burst.sh <URL>` | **Java 21+ or Docker**, and bash (Git Bash/WSL on Windows) | or `java burst/Burst.java <URL>` from any terminal, including PowerShell; all options in [Burst test](#burst-test) |
 
 ### With Docker (same as production)
 
@@ -264,22 +264,73 @@ setup ([below](#alternative-any-docker-host-same-containers-as-local)), Dozzle s
 
 ## Burst test
 
-```bash
-ADMIN_KEY=<admin key> ./burst.sh <BASE_URL> [--scale N] [--concurrency N]
+The burst is one self-contained Java file, [`burst/Burst.java`](burst/Burst.java), with no dependencies.
+`./burst.sh` is a small bash wrapper around it. It needs **Java 21+**, or **Docker** if Java isn't installed.
 
-./burst.sh http://localhost:8080                                   # local stack (admin key: local-admin-key)
-ADMIN_KEY=… ./burst.sh https://seat-reserve-lrvt.onrender.com --scale 4 --timeout 100   # ~23,000 requests against the live URL
-```
+**Options**
 
-It needs **Java 21+** (a single-file program, `burst/Burst.java`, no dependencies), or falls back to **Docker**.
+| Option | Default | |
+|---|---|---|
+| `<BASE_URL>` (first argument) | required | e.g. `https://seat-reserve-lrvt.onrender.com` or `http://localhost:8080` |
+| `--admin-key KEY` | `ADMIN_KEY` env var, else `local-admin-key` | needed to create the show and tokens; the live key is in the submission email |
+| `--scale N` | `1` | multiplies every scenario: 1 ≈ 5,900 requests, 4 ≈ 23,500 |
+| `--concurrency N` | `2000` | maximum requests open at the same time |
+| `--timeout SECONDS` | `60` | per request; use `100` against the live URL |
+| `--wait-for-expiry` | off | also wait for unconfirmed holds to expire (about 5 min on the live service) |
+
+**Ways to run it**
+
+1. **bash** (Linux, macOS, Git Bash or WSL on Windows), from the repo folder:
+   ```bash
+   ./burst.sh http://localhost:8080                       # local stack
+   ADMIN_KEY='<admin key>' ./burst.sh https://seat-reserve-lrvt.onrender.com --scale 4 --timeout 100
+   ```
+
+2. **Any terminal with Java 21+** (PowerShell, cmd, bash, zsh), from the repo folder:
+   ```bash
+   java burst/Burst.java https://seat-reserve-lrvt.onrender.com --scale 4 --timeout 100 --admin-key '<admin key>'
+   ```
+   In Windows cmd, use double quotes around the key instead of single quotes.
+
+3. **From any folder:** give the file's full path.
+   ```bash
+   java ~/code/seatBookingSystem/burst/Burst.java https://seat-reserve-lrvt.onrender.com --admin-key '<admin key>'
+   ```
+   ```powershell
+   java C:\code\seatBookingSystem\burst\Burst.java https://seat-reserve-lrvt.onrender.com --admin-key '<admin key>'
+   ```
+
+4. **Without cloning the repo:** download just the one file, then run it.
+   ```bash
+   curl -fsSLO https://raw.githubusercontent.com/ashwinmandlik/seatBookingSystem/main/burst/Burst.java
+   java Burst.java https://seat-reserve-lrvt.onrender.com --scale 4 --timeout 100 --admin-key '<admin key>'
+   ```
+   ```powershell
+   Invoke-WebRequest https://raw.githubusercontent.com/ashwinmandlik/seatBookingSystem/main/burst/Burst.java -OutFile Burst.java
+   java Burst.java https://seat-reserve-lrvt.onrender.com --scale 4 --timeout 100 --admin-key '<admin key>'
+   ```
+
+5. **Docker only, no Java installed:** `./burst.sh` switches to Docker by itself (including in Git Bash).
+   To call Docker directly, from the repo folder (Linux, macOS, or PowerShell):
+   ```bash
+   docker run --rm -v "$PWD/burst:/burst:ro" eclipse-temurin:21-jdk \
+     java /burst/Burst.java https://seat-reserve-lrvt.onrender.com --admin-key '<admin key>'
+   ```
+   ```powershell
+   docker run --rm -v "${PWD}\burst:/burst:ro" eclipse-temurin:21-jdk java /burst/Burst.java https://seat-reserve-lrvt.onrender.com --admin-key '<admin key>'
+   ```
+   For a service running on your own machine, add `--network host` on Linux. On Docker Desktop, use `./burst.sh`
+   (next paragraph).
+
+**Setting the admin key as a variable** instead of `--admin-key`: `export ADMIN_KEY='…'` (bash, zsh),
+`$env:ADMIN_KEY='…'` (PowerShell), `set ADMIN_KEY=…` (cmd). Note that `ADMIN_KEY=… command` on one line works
+only in bash and zsh, not in PowerShell.
 
 **On Docker Desktop (Windows, macOS)** with a `localhost` target, it fires from inside the stack's Docker network
 (and says so). Docker Desktop forwards published ports through a userspace proxy that refuses connections
 when thousands open at once: fired from the host, ~1,100–1,500 of 5,770 requests fail to connect, never
 reach the app, and fail the run, while every answer that did arrive is correct. From inside the network,
 every check passes. `BURST_FROM_HOST=1` forces the host path. Linux Docker forwards in the kernel and is unaffected.
-
-**Windows PowerShell** (no bash): `java burst/Burst.java <BASE_URL> [options] --admin-key <admin key>`, the same program.
 
 It creates a fresh show and fires everything at the same instant:
 
