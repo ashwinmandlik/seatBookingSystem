@@ -59,6 +59,10 @@ seatreserve:
     # Every instance runs the sweeper; SKIP LOCKED splits the work safely.
     enabled: ${HOLD_SWEEPER_ENABLED:true}
     interval-ms: ${HOLD_SWEEP_INTERVAL_MS:1000}
+  bulkhead:
+    # Write requests processed at once; the rest wait in a fair queue, parked
+    # before auth/parsing. Keeps a small CPU focused and health checks fast.
+    max-concurrent-writes: ${BULKHEAD_MAX_CONCURRENT_WRITES:32}
   idle-aware:
     # Off by default. On a database that pauses when idle and bills for awake
     # time (e.g. Neon free), background jobs touch it only when needed.
