@@ -292,13 +292,18 @@ The burst is one self-contained Java file, [`burst/Burst.java`](burst/Burst.java
    ```
    In Windows cmd, use double quotes around the key instead of single quotes.
 
-3. **From any folder:** give the file's full path.
+3. **From any folder:** give the file's full path, replacing `<repo>` with wherever you cloned it.
    ```bash
-   java ~/code/seatBookingSystem/burst/Burst.java https://seat-reserve-lrvt.onrender.com --admin-key '<admin key>'
+   java <repo>/burst/Burst.java https://seat-reserve-lrvt.onrender.com --admin-key '<admin key>'
+   # e.g. java ~/projects/seatBookingSystem/burst/Burst.java …
    ```
    ```powershell
-   java C:\code\seatBookingSystem\burst\Burst.java https://seat-reserve-lrvt.onrender.com --admin-key '<admin key>'
+   java <repo>\burst\Burst.java https://seat-reserve-lrvt.onrender.com --admin-key '<admin key>'
+   # e.g. java $HOME\projects\seatBookingSystem\burst\Burst.java …   (PowerShell doesn't expand ~ for java; use $HOME)
    ```
+
+   If Java answers `ClassNotFoundException: …Burst.java`, it didn't find the file at that path (Java then treats
+   the argument as a class name). Check the path, or `cd` into the repo and use `burst/Burst.java`.
 
 4. **Without cloning the repo:** download just the one file, then run it.
    ```bash
