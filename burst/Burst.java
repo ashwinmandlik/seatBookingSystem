@@ -220,7 +220,7 @@ public class Burst {
 
         // Fire --------------------------------------------------------------
         AtomicInteger answered = new AtomicInteger();
-        line("firing      %d requests at once (max %d in flight)...", plan.size(), concurrency);
+        line("firing      %d requests at once (up to %d concurrently)...", plan.size(), concurrency);
         Live live = new Live(showId, 250, () -> String.format("responses %,d/%,d", answered.get(), plan.size()));
         Semaphore inFlight = new Semaphore(concurrency);
         CountDownLatch go = new CountDownLatch(1);

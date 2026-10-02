@@ -15,17 +15,17 @@ WHERE show_id = ? AND label = ANY(?) AND status = 'AVAILABLE';         -- guard 
 ```
 
 **Why it's race-free:** 500 requests for A12 queue on A12's row lock. The first finds it `AVAILABLE` and
-commits. Each waiter, once the lock is released, **re-reads the committed row** (Postgres re-evaluates
+commits. Each waiter, once the lock is released, re-reads the committed row (Postgres re-evaluates
 locked rows under READ COMMITTED), sees `CONFIRMED`, and declines with a clean 409. Nobody decides from a
 value they read without holding the lock. The `status = 'AVAILABLE'` guard means the `UPDATE` alone can
 never overwrite a taken seat, and a schema `CHECK` ties a seat's status to its owner columns.
 
 I checked that the tests can actually catch a race: with `FOR UPDATE` and the guard removed, the 500-way
-test produced **18 winners for one seat**.
+test produced 18 winners for one seat.
 
 **Multi-seat and deadlocks:** requests are **all-or-nothing**. If any requested seat is taken, the
-transaction rolls back and nothing is held. Deadlocks are prevented by **one global lock order used by every
-write path**:
+transaction rolls back and nothing is held. Deadlocks are prevented by one global lock order, used by every
+write path:
 
 ```
 reservation (id)  ->  user quota (show, user)  ->  seats (show, label ascending)
@@ -35,38 +35,39 @@ Reserve takes key → quota → seats; it only *creates* a reservation row and n
 fits the order. Confirm takes reservation → seats; cancel and expiry take reservation → quota → seats. A
 deadlock needs two transactions locking the same rows in opposite orders, which a single order rules out. Two
 places that silently broke it were caught in design and review:
-- an expiry sweeper that released **many users' holds in one transaction** would lock one user's seats and then
-  another user's quota row (seats before quota). So it expires **one hold per transaction**.
-- `UPDATE seats … WHERE reservation_id = ?` locks rows in **scan order**, not label order. So confirm and release
+- an expiry sweeper that released many users' holds in one transaction would lock one user's seats and then
+  another user's quota row (seats before quota). So it expires one hold per transaction.
+- `UPDATE seats … WHERE reservation_id = ?` locks rows in scan order, not label order. So confirm and release
   lock their seats `ORDER BY label` first.
 
-To prove the stress test would catch a mistake, I reversed the quota/seat order on purpose: **216 "deadlock
-detected" errors** in one run. With the correct order there are none.
+To check that the stress test would catch a mistake, I reversed the quota/seat order on purpose and got 216 "deadlock
+detected" errors in one run. With the correct order there are none.
 
 **Per-user limit:** a single conditional upsert on a `(show, user)` quota row:
 `… ON CONFLICT DO UPDATE SET held_count = held_count + n WHERE held_count + n <= seat_limit`. Zero rows
 affected means 409. The row lock serialises one user's parallel requests, and `CHECK (held_count <= seat_limit)`
-makes over-allocation impossible even for buggy code. 10 parallel requests against a limit of 4 → exactly 4.
+makes over-allocation impossible even for buggy code. Ten parallel requests against a limit of 4 end with
+exactly 4 seats.
 
 **Hot seats without exhausting the pool:** without help, 500 waiters on one row would each hold a pooled
 connection, starving requests for other seats. An in-memory per-seat gate (striped locks, taken in sorted
 order) makes them wait in the JVM instead, and a short-TTL "known taken" cache declines the losers without a
-database round trip: 499 of 500 never touch Postgres. It can only **decline, never grant**. With it
-switched off, every correctness test still passes.
+database round trip: 499 of 500 never touch Postgres. It can only decline, never grant, and with it
+switched off every correctness test still passes.
 
 ## 2. Idempotency
 
 - **Where:** table `idempotency_keys`, primary key `(user_id, show_id, idem_key)`, holding a SHA-256 `request_hash` of
   *(show, sorted seats, hold flag)* and the `reservation_id`. Keys are scoped per user, so one user can never
   replay another's, and per show, so every row of a reservation shares `show_id` (shardable by show).
-- **Exactly-once:** the key `INSERT … ON CONFLICT DO NOTHING` is the **first statement of the same transaction**
-  that takes the seats. Key and reservation commit together or not at all. A concurrent duplicate **blocks on the
-  unique index** until the first transaction finishes. If that one committed, the duplicate sees the conflict and
-  replays; if it rolled back (e.g. seat taken), the duplicate proceeds on its own. 1000 identical concurrent
-  requests → one reservation, 999 replays.
-- **Replay** returns **200** with the original reservation and `Idempotent-Replayed: true`, not a second
+- **Exactly-once:** the key `INSERT … ON CONFLICT DO NOTHING` is the first statement of the same transaction
+  that takes the seats. Key and reservation commit together or not at all. A concurrent duplicate blocks on the
+  unique index until the first transaction finishes. If that one committed, the duplicate sees the conflict and
+  replays; if it rolled back (e.g. seat taken), the duplicate proceeds on its own. In the tests, 1,000
+  identical concurrent requests produce one reservation and 999 replays.
+- **Replay** returns 200 with the original reservation and `Idempotent-Replayed: true`, not a second
   201: a replay is not a sale, so "exactly one 201 per seat" stays true.
-- **Same key, different body** (hash mismatch) → **409 `IDEMPOTENCY_KEY_REUSED`**.
+- **Same key, different body** (hash mismatch) returns 409 `IDEMPOTENCY_KEY_REUSED`.
 - Declines aren't stored, so a retry after a 409 is evaluated again. Keys are never purged yet; production
   would expire them after ~24 h.
 - I chose Postgres over Redis for keys deliberately: Redis can't join the Postgres transaction, so it would be a
@@ -76,16 +77,16 @@ switched off, every correctness test still passes.
 
 ## 3. Holds and expiry
 
-I implemented **both** models in the brief. `POST /reserve` confirms immediately (the contract's 201
+I implemented both models in the brief. `POST /reserve` confirms immediately (the contract's 201
 `confirmed`), and owners can cancel. With `"hold": true` the seat is held until `now() + HOLD_TTL_SECONDS`
-(300 s), using the **database clock**, so every instance agrees and seat and reservation deadlines are identical.
+(300 s), using the database clock, so every instance agrees and seat and reservation deadlines are identical.
 `POST /reservations/{id}/confirm` turns it into a sale only while the deadline hasn't passed.
 
-A **sweeper** in every instance expires holds once a second:
+A sweeper in every instance expires holds once a second:
 `SELECT … WHERE status = 'HELD' AND expires_at <= now() ORDER BY expires_at LIMIT 1 FOR UPDATE SKIP LOCKED`,
-**one hold per transaction**. `SKIP LOCKED` lets any number of instances split the work without leader election
-or processing a hold twice. Release is guarded on `reservation_id = <this one>`, so it **can never resurrect a seat
-already sold to someone else**, and the user's quota is returned in the same transaction. Confirm racing
+one hold per transaction. `SKIP LOCKED` lets any number of instances split the work without leader election
+or processing a hold twice. Release is guarded on `reservation_id = <this one>`, so it can never resurrect a seat
+already sold to someone else, and the user's quota is returned in the same transaction. Confirm racing
 expiry, cancel racing expiry, and 8 parallel sweepers are all tested. An expired hold may still show as `held`
 for up to one sweep interval; it's never double-counted. I rejected lazy expiry (a reserve stealing an
 expired hold), because it would lock another user's reservation and quota after its own quota, which breaks
@@ -103,7 +104,7 @@ broken promise) is far worse than briefly refusing sales.
   idempotency key that's a clean replay; without one, at worst a 409 for the user's own seat. Never a second sale.
 - **Redis partitioned:** a circuit breaker bypasses it for 5 s, and correctness is unchanged. It's excluded
   from readiness on purpose.
-- **Liveness never checks the database**, so a database outage doesn't make the platform restart every instance.
+- Liveness never checks the database, so a database outage doesn't make the platform restart every instance.
 - The AP alternative (accept bookings locally, reconcile later) means overbooking plus compensation. That's
   acceptable for airline economy seats, not for assigned seats.
 
@@ -126,10 +127,10 @@ histogram showed ~115 KB per waiting connection (out of memory at ~2,000 queued)
 showed half the "seat taken" answers bypassing the cache, and Render's event log showed its proxy couldn't
 connect (`dial tcp … i/o timeout`). The fixes are in the commit history: a write bulkhead, platform threads with
 small buffers so waiting is cheap, a fast decline path, sampled decline logs, and keep-alive tuning. Together they
-took the free instance from 44 to 99 requests per second, with no restarts.
+raised the free instance from 44 to between 87 and 99 requests per second across later runs, with no restarts.
 
 Business counters (`reservations_confirmed_total`, `reservations_declined_total{reason,source}`) increment
-**only after commit**, never inside the retried transaction, so they reconcile exactly with API responses.
+only after commit, never inside the retried transaction, so they reconcile exactly with API responses.
 The burst script checks this, and checks that server-side taken seats equal the seats clients were told they
 got. Logs are JSON with `request_id` (also in the response header and every error body) and the token's
 `user_id`, plus one access line per request with its outcome code. Readiness uses its own database connection
@@ -137,7 +138,7 @@ so a saturated pool isn't mistaken for a dead database.
 
 ## 6. AI usage: directed vs decided
 
-I used **Claude Code (Anthropic)** as a pair programmer for the whole build, working interactively: it
+I used Claude Code (Anthropic) as a pair programmer for the whole build, working interactively: it
 proposed designs and explained trade-offs, I asked questions and made the calls, and it implemented and
 tested each step after I approved it. It wrote nearly all of the code, tests, scripts and docs. I also asked
 ChatGPT for an independent spec and used it as a checklist against what we'd built.
@@ -156,9 +157,8 @@ ChatGPT for an independent spec and used it as a checklist against what we'd bui
   with a keep-warm cron and idle-aware background jobs so Neon's free compute hours last the month.
 - From the ChatGPT spec: adopt `/health/live|ready`, request ids in errors and more metrics; reject what
   contradicted the brief (holds by default, unsigned `Bearer <user-id>` tokens).
-- Stay on the free tier after the first live restarts and make it faster rather than pay. I asked what a
-  world-class engineer would do; the answer was to measure first (CPU per request, one change at a time),
-  then cut work and add isolation. I rejected adding Redis for speed after the measurements showed the bottleneck
+- Stay on the free tier after the first live restarts and make it faster rather than pay. The approach was to
+  measure first (CPU per request, one change at a time), then cut work and add isolation. I rejected adding Redis for speed after the measurements showed the bottleneck
   was app CPU, not data access.
 - A bulk token endpoint, plus a README section so reviewers' own load tools can get tokens easily.
 
@@ -168,8 +168,8 @@ design, the embedded-Postgres test approach (so tests need no Docker), and the p
 experiments, the fast decline path, log sampling, the bulkhead, and switching from virtual to platform threads.
 That last one reversed an earlier AI recommendation once Render's own event log disproved its premise.
 
-**How I kept it honest:** every concurrency property has a test against real Postgres, and I had the AI
-**break the code on purpose** to prove the tests catch it (18 double-sells without the lock, 216 deadlocks
+**How I checked the work:** every concurrency property has a test against real Postgres, and I had the AI
+break the code on purpose to confirm the tests catch it (18 double-sells without the lock, 216 deadlocks
 with the order reversed, correctness unchanged with the gate disabled). The AI also caught and corrected
 its own mistakes along the way (a 30 s Redis TTL that was unsafe, a burst script that crashed during
 setup, a burst client whose HTTP/2 use caused 98% "drops", a gauge exported under the wrong name, a profile

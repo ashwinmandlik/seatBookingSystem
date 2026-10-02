@@ -5,7 +5,7 @@
 A JSON API that sells assigned seats for a show and stays correct under an on-sale stampede: a seat is
 never sold twice, a user never exceeds their limit, and a retried request never reserves twice. Every
 decision is made by PostgreSQL (row locks taken in one global order, conditional updates, and
-constraints), with Prometheus metrics, structured logs, and a one-command burst that proves it against
+constraints), with Prometheus metrics, structured logs, and a one-command burst test that checks all of this against
 the live URL.
 
 | | |
@@ -44,7 +44,7 @@ curl -s $URL/shows/$SHOW | jq .counts
 curl -s $URL/actuator/prometheus | grep -E '^reservations_(confirmed|declined)_total|^seats_available'
 ```
 Expected answers: `201` winner, `409 SEAT_TAKEN` / `PER_USER_LIMIT` / `IDEMPOTENCY_KEY_REUSED` declines,
-`200` + `Idempotent-Replayed: true` for a retry with the same key. Or just run ours: `./burst.sh $URL`.
+`200` + `Idempotent-Replayed: true` for a retry with the same key. Or run the included burst test: `./burst.sh $URL`.
 
 **Postman:** import [`postman/SeatReserve.postman_collection.json`](postman/SeatReserve.postman_collection.json). One collection works against both targets: set the `target` variable to `live` (paste the admin key into `liveAdminKey`) or `local` (`localhost:8080`, works as is). A collection script picks the URL and admin key and clears saved tokens when you switch. Run it with the Collection Runner: 25 requests in order (tokens, a fresh show, then every rule: seat taken, idempotent replay, key reuse, per-user limit, token identity, hold → confirm, cancel) with 42 tests on the responses.
 
@@ -90,8 +90,8 @@ stops with a short message listing these options.
 ./gradlew test
 ```
 
-The 100 tests run against **real PostgreSQL 16 and Redis binaries** started in-process. No Docker is needed, so
-they run the same on Linux, macOS (Intel or Apple Silicon) and Windows. They include genuinely concurrent races:
+Over 100 tests run against **real PostgreSQL 16 and Redis binaries** started in-process. No Docker is needed, so
+they run the same on Linux, macOS (Intel or Apple Silicon) and Windows. They include real concurrent races:
 1000 users on one seat, 1000 identical retries, per-user-limit floods, cancel vs reserve, confirm vs
 expiry, multiple sweepers, and a mixed 100-thread stress test that would surface any deadlock.
 
@@ -195,7 +195,7 @@ Every error has the same shape, with the `request_id` that also appears in the `
 | **409** | **`SEAT_TAKEN`, `PER_USER_LIMIT`, `IDEMPOTENCY_KEY_REUSED`**, `RESERVATION_NOT_ACTIVE`, `HOLD_EXPIRED` |
 | 503 | `SERVICE_UNAVAILABLE` (database unreachable, `Retry-After: 1`) |
 
-Declines are domain outcomes (4xx); 5xx is reserved for genuine server failure.
+Declines are domain outcomes (4xx); a 5xx means a real server failure.
 
 ---
 
@@ -320,7 +320,7 @@ It exits `0` only if every check passes: 16, or 18 with `--wait-for-expiry`.
 target      https://seat-reserve-lrvt.onrender.com  (ready)
 show        a43c6ad8-52bf-46f9-aacf-5fff3edba8ba  (7886 seats, per_user_limit 4)
 tokens      20780 users minted in 6.3s
-firing      23080 requests at once (max 2000 in flight)...
+firing      23080 requests at once (up to 2000 concurrently)...
 
 done        23080 requests in 265.60s  ->  87 req/s
 latency     p50 19389ms  p95 46536ms  p99 59986ms  max 68452ms
@@ -371,9 +371,9 @@ Checks
 
 RESULT: PASS
 ```
-Throughput is bounded by the free instance's CPU share, not by the design: the same build does ~680 req/s on a laptop with the client competing for the same CPU (below). The point of the live run is that the correctness checks hold on real infrastructure behind a real proxy, with every request answered.
+Throughput is bounded by the free instance's CPU share, not by the design: the same build does ~680 req/s on a laptop with the client competing for the same CPU (below). The live run shows the correctness checks holding on real infrastructure, behind a real proxy, with every request answered.
 
-**Local run** (laptop, app + Postgres + client on one machine, 200 in flight):
+**Local run** (laptop, app + Postgres + client on one machine, 200 concurrent requests):
 ```
 done        5770 requests in 8.53s  ->  676 req/s
 latency     p50 227ms  p95 677ms  p99 912ms  max 1516ms
@@ -444,9 +444,9 @@ the commit history):
 |---|---|
 | Render free sleeps after 15 idle minutes (~1 min to wake) | An uptime monitor pings `/health/live` every 5 min (GitHub Action as backup). Render's 750 free hours/month cover running all month. |
 | ~0.1–0.25 of one CPU | Measured CPU per request, one change at a time, and cut what cost most: one JSON log line per request (logging was 24% of CPU), decline-log sampling under load, the fast decline path, C1-only JIT (full C2 compilation *cost* 42% more during a burst). |
-| 512 MB RAM | Serial GC, heap 65%, small socket buffers (2 KB). With virtual threads every accepted connection was parsed at once and parked holding ~115 KB of buffers, and a burst ran the heap out. A fixed pool of **32 platform threads** keeps waiting connections as tiny queued tasks instead. |
+| 512 MB RAM | Serial GC, heap 65%, small socket buffers (2 KB). With virtual threads every accepted connection was parsed at once and parked holding ~115 KB of buffers, and a burst exhausted the heap. A fixed pool of **32 platform threads** keeps waiting connections as tiny queued tasks instead. |
 | Render restarts an instance its proxy can't connect to (`dial tcp … i/o timeout`) | Accept up to **8,000** connections so the proxy can always connect; waiting is cheap (above). **No platform health-check path**: Render allows 5 s per check, and on this CPU a check can queue longer than that behind buyers. `/health/live` and `/health/ready` are still served. |
-| Cloudflare in front of Render: a request waiting > 100 s becomes a `524` | Throughput work keeps the tail well under it (latest live run: max 36 s). Upstream keep-alive tuned so Render's proxy, not Tomcat, closes idle connections (avoids `520`s). |
+| Cloudflare in front of Render: a request waiting > 100 s becomes a `524` | Throughput work keeps the tail under it (live runs: max latency 36–68 s). Upstream keep-alive tuned so Render's proxy, not Tomcat, closes idle connections (avoids `520`s). |
 | Neon free pauses after 5 idle minutes and allows 100 CU-hours/month | **Idle-aware mode** (`IDLE_AWARE_ENABLED=true`): the hold sweeper queries only when a hold can be due, seat gauges only after seats change (plus hourly), and the pool shrinks to zero. An idle service lets Neon pause; `/health/live` never touches the database. |
 | Hot-seat cache staleness | A single instance clears entries on cancel/expiry, so sold seats stay cached for the whole sale (10 min TTL); at 2 s, half the losers fell back to the database path. |
 | Logs | Render's log viewer is per-account, so a screen recording of the live logs under a burst is linked in the submission. Lines are JSON with `request_id`/`user_id`. |
@@ -457,7 +457,7 @@ instance, then serves normally; the first request after Neon has paused takes a 
 ### Alternative: any Docker host (same containers as local)
 
 For a VM, production is **`docker-compose.yml` plus `docker-compose.prod.yml`**: the same containers as local,
-plus Caddy (automatic HTTPS, connection absorption, readiness-gated routing) and Dozzle (log viewer at
+plus Caddy (automatic HTTPS, absorbs connection spikes, routes only to a ready app) and Dozzle (log viewer at
 `/logs`), with Postgres on the same host and never exposed. On a fresh Ubuntu 24.04 VM with ports 80/443 open:
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/<you>/<repo>/main/deploy/setup-vm.sh
@@ -480,7 +480,7 @@ deployment is Render.)
 | `HOLD_TTL_SECONDS` | `300` | hold lifetime |
 | `HOLD_SWEEP_INTERVAL_MS` / `HOLD_SWEEPER_ENABLED` | `1000` / `true` | expiry sweeper |
 | `IDLE_AWARE_ENABLED` / `IDLE_AWARE_MAX_IDLE_MINUTES` | `false` / `60` | leave an idle, pause-when-idle database alone |
-| `DB_POOL_SIZE` / `DB_CONNECTION_TIMEOUT_MS` | `20` / `60000` | the pool is the backpressure valve |
+| `DB_POOL_SIZE` / `DB_CONNECTION_TIMEOUT_MS` | `20` / `60000` | caps concurrent database work |
 | `DB_MIN_IDLE` / `DB_IDLE_TIMEOUT_MS` | pool size / `600000` | `0` / `60000` lets the pool shrink to zero when idle |
 | `HOT_SEATS_ENABLED` / `HOT_SEATS_CACHE_TTL_MS` | `true` / `2000` | in-memory hot-seat gate; the 2 s default bounds staleness across instances (Render, a single instance, uses `600000`) |
 | `HOT_SEATS_MAX_ENTRIES` | `500000` | cap on cached taken seats (Render: `100000`, ~20 MB) |
