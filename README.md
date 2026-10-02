@@ -396,16 +396,17 @@ RESULT: PASS
 2. **Render** ([render.com](https://render.com)): **New → Blueprint** → select this repo → paste the Neon string
    when prompted for `DATABASE_URL`. `JWT_SECRET` and `ADMIN_KEY` are generated; the admin key is under
    the service's **Environment** tab. Render builds the `Dockerfile` and redeploys on every push.
-3. **Keep-warm:** in the GitHub repo set the Actions variable **`LIVE_URL`** (Settings → Secrets and variables →
-   Actions → Variables) to the Render URL. [`keep-warm`](.github/workflows/keep-warm.yml) pings
-   `/health/live` every 10 minutes so the free instance never reaches its 15-minute sleep.
+3. **Keep-warm:** a free external uptime monitor (UptimeRobot, HTTP check every 5 minutes) pings `/health/live` so
+   the free instance never reaches its 15-minute sleep. Backup: the [`keep-warm`](.github/workflows/keep-warm.yml)
+   GitHub Action (set the Actions variable **`LIVE_URL`** to the Render URL). It isn't the primary because GitHub
+   runs schedules best-effort and can skip them for longer than 15 minutes.
 
 **How the free tiers are handled** (each row was found by load-testing the live service; the full story is in
 the commit history):
 
 | Constraint | Handling |
 |---|---|
-| Render free sleeps after 15 idle minutes (~1 min to wake) | `keep-warm` pings `/health/live` every 10 min. Render's 750 free hours/month cover running all month. |
+| Render free sleeps after 15 idle minutes (~1 min to wake) | An uptime monitor pings `/health/live` every 5 min (GitHub Action as backup). Render's 750 free hours/month cover running all month. |
 | ~0.1–0.25 of one CPU | Measured CPU per request, one change at a time, and cut what cost most: one JSON log line per request (logging was 24% of CPU), decline-log sampling under load, the fast decline path, C1-only JIT (full C2 compilation *cost* 42% more during a burst). |
 | 512 MB RAM | Serial GC, heap 65%, small socket buffers (2 KB). With virtual threads every accepted connection was parsed at once and parked holding ~115 KB of buffers, and a burst ran the heap out. A fixed pool of **32 platform threads** keeps waiting connections as tiny queued tasks instead. |
 | Render restarts an instance its proxy can't connect to (`dial tcp … i/o timeout`) | Accept up to **8,000** connections so the proxy can always connect; waiting is cheap (above). **No platform health-check path**: Render allows 5 s per check, and on this CPU a check can queue longer than that behind buyers. `/health/live` and `/health/ready` are still served. |

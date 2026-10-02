@@ -2,17 +2,22 @@
 # inbound traffic and takes ~1 minute to wake. Pings /health/live, which never
 # touches the database, so Neon can still pause when the service is idle.
 #
+# Backup only: GitHub runs schedules best-effort and can delay or skip them by
+# 30-60+ minutes, longer than Render's 15-minute idle window. The primary pinger
+# is an external uptime monitor (UptimeRobot, every 5 minutes, same URL).
+#
 # Set the repository variable LIVE_URL (Settings -> Secrets and variables ->
 # Actions -> Variables), e.g. https://seat-reserve.onrender.com
 name: keep-warm
 
 on:
   schedule:
-    # Every 10 minutes, around the clock.
-    - cron: "*/10 * * * *"
+    # Every 10 minutes, off the round minutes (:07, :17, ...): runs scheduled on
+    # :00/:10/:20 are the ones GitHub delays or drops most under load.
+    - cron: "7-59/10 * * * *"
     # Night off instead (awake ~05:30-23:30 IST, i.e. 00:00-17:59 UTC):
     # replace the line above with
-    # - cron: "*/10 0-17 * * *"
+    # - cron: "7-59/10 0-17 * * *"
   workflow_dispatch:
 
 jobs:
