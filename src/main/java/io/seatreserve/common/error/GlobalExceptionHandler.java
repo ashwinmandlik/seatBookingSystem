@@ -15,6 +15,7 @@ import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.jdbc.CannotGetJdbcConnectionException;
+import org.springframework.security.web.firewall.RequestRejectedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
@@ -72,6 +73,15 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(HttpMessageNotReadableException.class)
     ResponseEntity<ApiError> unreadable(HttpMessageNotReadableException e) {
         return badRequest(ErrorCode.MALFORMED_REQUEST, "Request body is missing or not valid JSON", Map.of());
+    }
+
+    /**
+     * Spring Security's firewall validates header values lazily, so a malformed header (e.g. one
+     * containing a line break) can be rejected while MVC is running. It's the client's fault: 400.
+     */
+    @ExceptionHandler(RequestRejectedException.class)
+    ResponseEntity<ApiError> rejected(RequestRejectedException e) {
+        return badRequest(ErrorCode.MALFORMED_REQUEST, "Request rejected: malformed header or URL", Map.of());
     }
 
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)

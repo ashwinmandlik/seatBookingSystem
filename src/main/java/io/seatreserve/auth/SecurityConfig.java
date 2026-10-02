@@ -29,6 +29,7 @@ import org.springframework.security.oauth2.server.resource.web.authentication.Be
 import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.access.AccessDeniedHandler;
+import org.springframework.security.web.firewall.RequestRejectedHandler;
 
 /**
  * Stateless bearer-token auth. The authenticated user id is the JWT subject;
@@ -66,6 +67,16 @@ public class SecurityConfig {
                 // Every log line after authentication carries the token's user id.
                 .addFilterAfter(new AuthenticatedUserMdcFilter(), BearerTokenAuthenticationFilter.class)
                 .build();
+    }
+
+    /**
+     * Spring Security's firewall rejects malformed requests (e.g. a header containing a line
+     * break). Without a handler that surfaces as a 500; it's the client's fault, so a 400.
+     */
+    @Bean
+    RequestRejectedHandler requestRejectedHandler(ObjectMapper json) {
+        return (req, res, e) -> write(req, res, json, HttpServletResponse.SC_BAD_REQUEST, ErrorCode.MALFORMED_REQUEST,
+                "Request rejected: malformed header or URL");
     }
 
     @Bean
