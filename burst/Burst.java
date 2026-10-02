@@ -514,7 +514,25 @@ public class Burst {
         headers.forEach(b::header);
         b.method(method, body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(body));
         long t0 = System.nanoTime();
-        HttpResponse<String> res = http.send(b.build(), HttpResponse.BodyHandlers.ofString());
+        // HttpClient's timeout only covers waiting for response headers; a connection that dies
+        // mid-response (e.g. the server restarting) could otherwise hang the burst forever.
+        // An absolute deadline guarantees every request ends and the report is printed.
+        HttpResponse<String> res;
+        try {
+            res = http.sendAsync(b.build(), HttpResponse.BodyHandlers.ofString())
+                    .orTimeout(REQUEST_TIMEOUT.toSeconds() + 30, java.util.concurrent.TimeUnit.SECONDS)
+                    .join();
+        } catch (java.util.concurrent.CompletionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof java.util.concurrent.TimeoutException) {
+                throw new java.net.http.HttpTimeoutException("no complete response within "
+                        + (REQUEST_TIMEOUT.toSeconds() + 30) + "s");
+            }
+            if (cause instanceof java.io.IOException io) {
+                throw io;
+            }
+            throw e;
+        }
         long micros = (System.nanoTime() - t0) / 1000;
         boolean replayed = res.headers().firstValue("Idempotent-Replayed").map("true"::equals).orElse(false);
         return new Http(res.statusCode(), res.body(), replayed, micros);
