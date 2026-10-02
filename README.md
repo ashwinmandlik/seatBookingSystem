@@ -50,6 +50,15 @@ no ORM, so the atomic statements are visible) · Micrometer/Prometheus · Docker
 
 ## Run it
 
+**What you need** (plus internet access on the first run, to download dependencies):
+
+| To… | Install | Everything else |
+|---|---|---|
+| Call the **live URL** | nothing (curl / your load tool) | — |
+| `docker compose up --build` | **Docker** | JDK, Gradle, Postgres and Redis all run in containers. Only port 8080 is published, so a local Postgres on 5432 doesn't conflict |
+| `./gradlew build` / `test` / `bootRun` | **any JDK 17+** | Gradle downloads itself and, if needed, JDK 21; tests start real Postgres/Redis binaries in-process (Linux, macOS Intel/Apple Silicon, Windows), so no database and no Docker |
+| `./burst.sh <URL>` | **Java 21+ or Docker**, and bash (Git Bash/WSL on Windows) | or run `java burst/Burst.java <URL>` directly |
+
 ### With Docker (same as production)
 
 ```bash
