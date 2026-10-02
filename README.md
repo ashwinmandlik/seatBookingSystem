@@ -15,6 +15,34 @@ the live URL.
 | Burst | `./burst.sh https://<LIVE-HOST>` (needs the admin key, see [Burst test](#burst-test)) |
 | Design write-up | [WRITEUP.md](WRITEUP.md) |
 
+### For reviewers: pointing your own load tool at it
+
+Tokens are **signed JWTs**: a raw user id such as `Bearer alice` is rejected with `401`. Prepare tokens once
+(they're valid for 12 hours), then fire:
+
+```bash
+URL=https://<LIVE-HOST>; ADMIN_KEY=<from the submission email>
+
+# 1. admin token, then a fresh show
+ADMIN=$(curl -s -X POST $URL/auth/token -H 'Content-Type: application/json' -H "X-Admin-Key: $ADMIN_KEY" \
+        -d '{"user_id":"admin"}' | jq -r .access_token)
+SHOW=$(curl -s -X POST $URL/shows -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
+        -d '{"name":"review","seats":["A1","A2","A3","A12","A13"],"price_paise":25000}' | jq -r .id)
+
+# 2. 20,000 user tokens in ONE call  ->  {"tokens": {"user-1": "eyJ…", …, "user-20000": "eyJ…"}}
+curl -s -X POST $URL/auth/tokens -H "X-Admin-Key: $ADMIN_KEY" -H 'Content-Type: application/json' \
+     -d '{"count":20000}' > tokens.json          # or {"user_ids":["alice","bob"]}, or add "prefix":"buyer-"
+
+# 3. each request: Authorization: Bearer <tokens[user]>
+#    POST $URL/shows/$SHOW/reserve   {"seats":["A12"],"idempotency_key":"…"}   (or Idempotency-Key header)
+
+# 4. verify
+curl -s $URL/shows/$SHOW | jq .counts
+curl -s $URL/actuator/prometheus | grep -E '^reservations_(confirmed|declined)_total|^seats_available'
+```
+Expected answers: `201` winner, `409 SEAT_TAKEN` / `PER_USER_LIMIT` / `IDEMPOTENCY_KEY_REUSED` declines,
+`200` + `Idempotent-Replayed: true` for a retry with the same key. Or just run ours: `./burst.sh $URL`.
+
 **Stack:** Java 21 (virtual threads) · Spring Boot 3.5 · PostgreSQL 16 · Flyway · JdbcTemplate (explicit SQL,
 no ORM, so the atomic statements are visible) · Micrometer/Prometheus · Docker Compose · Caddy.
 
@@ -44,7 +72,7 @@ Starts the app, Postgres 16 and (optional) Redis. The admin key is `local-admin-
 ./gradlew test
 ```
 
-The 72 tests run against **real PostgreSQL 16 and Redis binaries** started in-process. No Docker is needed, so
+The 77 tests run against **real PostgreSQL 16 and Redis binaries** started in-process. No Docker is needed, so
 they run the same on Linux, macOS (Intel or Apple Silicon) and Windows. They include genuinely concurrent races:
 1000 users on one seat, 1000 identical retries, per-user-limit floods, cancel vs reserve, confirm vs
 expiry, multiple sweepers, and a mixed 100-thread stress test that would surface any deadlock.
@@ -70,6 +98,15 @@ curl -X POST $URL/auth/token -H 'Content-Type: application/json' -H "X-Admin-Key
 ```
 Response: `{"access_token":"…","token_type":"Bearer","expires_in":43200,"user_id":"alice","scope":"user"}`.
 Send it as `Authorization: Bearer <access_token>`.
+
+**Many users at once** (for load testing; admin key required, up to 25,000 per call):
+```bash
+curl -X POST $URL/auth/tokens -H "X-Admin-Key: $ADMIN_KEY" -H 'Content-Type: application/json' \
+     -d '{"count":20000}'                      # users user-1..user-20000 (optional "prefix")
+curl -X POST $URL/auth/tokens -H "X-Admin-Key: $ADMIN_KEY" -H 'Content-Type: application/json' \
+     -d '{"user_ids":["alice","bob"]}'
+```
+Response: `{"token_type":"Bearer","expires_in":43200,"count":20000,"tokens":{"user-1":"eyJ…", …}}`.
 
 ### Create a show (admin)
 
