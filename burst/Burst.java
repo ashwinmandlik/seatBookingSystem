@@ -92,7 +92,19 @@ public class Burst {
 
     // -------------------------------------------------------------------- main
 
-    public static void main(String[] args) throws Exception {
+    public static void main(String[] args) {
+        try {
+            run(args);
+        } catch (Exception e) {
+            Throwable cause = e instanceof java.util.concurrent.ExecutionException && e.getCause() != null
+                    ? e.getCause() : e;
+            fail(cause instanceof java.net.ConnectException
+                    ? "cannot connect to " + base + " (is the service running and the URL right?)"
+                    : cause.getClass().getSimpleName() + ": " + cause.getMessage());
+        }
+    }
+
+    static void run(String[] args) throws Exception {
         parseArgs(args);
         http = HttpClient.newBuilder()
                 .version(HttpClient.Version.HTTP_2)   // multiplexed over TLS; falls back to 1.1 on plain http
@@ -101,7 +113,7 @@ public class Burst {
                 .build();
 
         line("== Seat reservation burst ==");
-        Http ready = send("GET", "/readyz", null, null, Map.of());
+        Http ready = sendWithRetry("GET", "/readyz", null, null, Map.of());
         if (ready.status != 200) {
             fail("Service not ready: GET /readyz -> " + ready.status + " " + ready.body);
         }
@@ -163,7 +175,7 @@ public class Burst {
 
         // Create the show and mint tokens ----------------------------------
         String adminToken = token("burst-admin", true);
-        Http created = send("POST", "/shows", adminToken, json(Map.of(
+        Http created = sendWithRetry("POST", "/shows", adminToken, json(Map.of(
                 "name", "burst-" + System.currentTimeMillis(),
                 "seats", seats,
                 "price_paise", 25000,
@@ -278,6 +290,8 @@ public class Burst {
         }
         results.stream().filter(r -> r.transportError() != null).limit(3)
                 .forEach(r -> line("  transport error example: %s", r.transportError()));
+
+        scorecard(results);
 
         // Client-side correctness checks
         List<String[]> checks = new ArrayList<>();
@@ -413,6 +427,36 @@ public class Burst {
         System.exit(allPass ? 0 : 1);
     }
 
+    /** The headline numbers per storm, in the shape a reviewer scans first. */
+    static void scorecard(List<Res> results) {
+        line("");
+        line("Scorecard");
+        card(results, "HOT SEAT (A1)", r -> r.req().scenario() == Scenario.HOT_STORM,
+                "Confirmed", r -> r.status() == 201, "Seat taken", r -> "SEAT_TAKEN".equals(r.code()));
+        card(results, "HOT HANDFUL (A2-A6)", r -> r.req().scenario() == Scenario.HOT_HANDFUL,
+                "Confirmed", r -> r.status() == 201, "Seat taken", r -> "SEAT_TAKEN".equals(r.code()));
+        card(results, "USER LIMIT (limit " + perUserLimit + ")", r -> r.req().scenario() == Scenario.LIMIT,
+                "Confirmed", r -> r.status() == 201, "Limit exceeded", r -> "PER_USER_LIMIT".equals(r.code()));
+        card(results, "IDEMPOTENCY (same key x4)", r -> r.req().scenario() == Scenario.RETRY,
+                "Created", r -> r.status() == 201, "Replayed", r -> r.status() == 200);
+        card(results, "SAME KEY, DIFFERENT BODY", r -> r.req().scenario() == Scenario.KEY_REUSE,
+                "Created", r -> r.status() == 201, "Key reused", r -> "IDEMPOTENCY_KEY_REUSED".equals(r.code()));
+        card(results, "GENERAL BUYERS", r -> r.req().scenario() == Scenario.GENERAL,
+                "Confirmed", r -> r.status() == 201, "Seat taken", r -> "SEAT_TAKEN".equals(r.code()));
+    }
+
+    static void card(List<Res> results, String title, java.util.function.Predicate<Res> in,
+                     String goodLabel, java.util.function.Predicate<Res> good,
+                     String declineLabel, java.util.function.Predicate<Res> declined) {
+        List<Res> rs = results.stream().filter(in).toList();
+        long other = rs.stream().filter(good.negate().and(declined.negate()))
+                .filter(r -> r.status() < 500 && r.transportError() == null).count();
+        line("  %-28s requests %6d   %s %6d   %s %6d   other 4xx %d   5xx %d   dropped %d", title, rs.size(),
+                goodLabel, rs.stream().filter(good).count(), declineLabel, rs.stream().filter(declined).count(),
+                other, rs.stream().filter(r -> r.status() >= 500).count(),
+                rs.stream().filter(r -> r.transportError() != null).count());
+    }
+
     static void check(List<String[]> checks, boolean ok, String what, String detail) {
         checks.add(new String[] {ok ? "PASS" : "FAIL", what, detail == null ? "" : detail});
     }
@@ -473,7 +517,7 @@ public class Burst {
     }
 
     static String token(String user, boolean admin) throws Exception {
-        Http h = send("POST", "/auth/token", null, json(Map.of("user_id", user)),
+        Http h = sendWithRetry("POST", "/auth/token", null, json(Map.of("user_id", user)),
                 admin ? Map.of("X-Admin-Key", adminKey) : Map.of());
         if (h.status != 200) {
             fail("Could not get a " + (admin ? "admin " : "") + "token: " + h.status + " " + h.body
@@ -482,9 +526,26 @@ public class Burst {
         return str(h.body, "access_token");
     }
 
+    /**
+     * Setup calls (tokens, show creation) retry transient connection failures:
+     * a refused connect while minting thousands of tokens is a client-side
+     * hiccup, not something the burst should crash on.
+     */
+    static Http sendWithRetry(String method, String path, String token, String body, Map<String, String> headers)
+            throws Exception {
+        for (int attempt = 1; ; attempt++) {
+            try {
+                return send(method, path, token, body, headers);
+            } catch (java.io.IOException e) {
+                if (attempt == 5) throw e;
+                Thread.sleep(100L * attempt);
+            }
+        }
+    }
+
     static Map<String, String> mintTokens(Set<String> users) throws Exception {
         Map<String, String> tokens = new ConcurrentHashMap<>();
-        Semaphore limit = new Semaphore(256);
+        Semaphore limit = new Semaphore(64);
         try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
             List<Future<?>> fs = new ArrayList<>();
             for (String u : users) {
