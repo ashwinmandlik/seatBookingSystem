@@ -30,7 +30,11 @@ docker_burst() {
   # Git Bash on Windows rewrites /burst/... arguments into Windows paths; keep them as written
   # and hand Docker a Windows-style path for the mount instead.
   if command -v cygpath >/dev/null 2>&1; then src="$(cygpath -m "$src")"; fi
-  MSYS_NO_PATHCONV=1 exec docker run --rm --network "$network" -e ADMIN_KEY -v "$src:/burst:ro" \
+  # A terminal for the container too, so the live seat counts update in place.
+  local tty=""
+  if [ -t 1 ]; then tty="-t"; fi
+  # shellcheck disable=SC2086  # $tty is empty or one flag
+  MSYS_NO_PATHCONV=1 exec docker run --rm $tty --network "$network" -e ADMIN_KEY -v "$src:/burst:ro" \
     eclipse-temurin:21-jdk java -Xss512k /burst/Burst.java "$url" "$@"
 }
 

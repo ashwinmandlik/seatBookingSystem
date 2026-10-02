@@ -80,6 +80,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: docker compose up --build
+        # 15 s holds, so the burst can watch unconfirmed holds expire (--wait-for-expiry).
+        env:
+          HOLD_TTL_SECONDS: 15
         run: docker compose up --build --detach --wait --wait-timeout 300
       - name: Ready (readiness checks Postgres)
         run: |
@@ -95,8 +98,8 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
-      - name: Burst (hot-seat storm, retries, limit floods; all 12 checks must pass)
-        run: ./burst.sh http://localhost:8080 --scale 1 --concurrency 500
+      - name: Burst (hot-seat storm, retries, limit floods, hold confirm/cancel/expiry; all 18 checks must pass)
+        run: ./burst.sh http://localhost:8080 --scale 1 --concurrency 500 --wait-for-expiry
       - name: Readiness fails closed when the database is down
         run: |
           docker compose stop postgres

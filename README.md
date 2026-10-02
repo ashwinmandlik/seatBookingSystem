@@ -16,7 +16,7 @@ the live URL.
 | Logs | JSON on stdout (Render log viewer); screen recording of live logs under a burst: *(link in submission)* |
 | Burst | `./burst.sh https://seat-reserve-lrvt.onrender.com` (needs the admin key, see [Burst test](#burst-test)) |
 | Design write-up | [WRITEUP.md](WRITEUP.md) |
-| Clean-clone CI | [`ci`](.github/workflows/ci.yml) on every push, from a fresh checkout: `./gradlew build` and `./gradlew dev` + the Postman suite on Linux, macOS (Apple Silicon) and Windows; `docker compose up --build`, then the Postman suite, `./burst.sh` (all 12 checks) and readiness failing closed with Postgres stopped |
+| Clean-clone CI | [`ci`](.github/workflows/ci.yml) on every push, from a fresh checkout: `./gradlew build` and `./gradlew dev` + the Postman suite on Linux, macOS (Apple Silicon) and Windows; `docker compose up --build`, then the Postman suite, `./burst.sh --wait-for-expiry` with 15 s holds (all 18 checks) and readiness failing closed with Postgres stopped |
 
 ### For reviewers: pointing your own load tool at it
 
@@ -275,7 +275,9 @@ It needs **Java 21+** (a single-file program, `burst/Burst.java`, no dependencie
 (and says so). Docker Desktop forwards published ports through a userspace proxy that refuses connections
 when thousands open at once: fired from the host, ~1,100–1,500 of 5,770 requests fail to connect, never
 reach the app, and fail the run, while every answer that did arrive is correct. From inside the network,
-all 12 checks pass. `BURST_FROM_HOST=1` forces the host path. Linux Docker forwards in the kernel and is unaffected.
+every check passes. `BURST_FROM_HOST=1` forces the host path. Linux Docker forwards in the kernel and is unaffected.
+
+**Windows PowerShell** (no bash): `java burst/Burst.java <BASE_URL> [options] --admin-key <admin key>`, the same program.
 
 It creates a fresh show and fires everything at the same instant:
 
@@ -287,10 +289,28 @@ It creates a fresh show and fires everything at the same instant:
 | 100 users × same request ×4 at once; 50 users reuse a key with other seats | one reservation per key; reuse → `409` |
 | 25 users × 10 parallel reserves, limit 4 | never more than 4 seats each |
 | spoofed `"user_id"` in the body | identity is always the token's |
+| 100 users with `"hold": true` | every one `201 held` with a deadline; the show reports them as `held` |
 | 3000 general buyers | realistic contention |
 
 Then it reconciles: server-side taken seats == seats the client was told it got, and metric deltas ==
-responses per reason. It exits `0` only if every check passes.
+responses per reason (confirmed, held, every decline).
+
+**Hold lifecycle**, after the burst: a third of the holds are confirmed and a third cancelled, all at once
+(checked: each answer, the show's `held`/`confirmed`/`available` deltas, the metrics). The last third is left to
+expire. With **`--wait-for-expiry`** the burst waits out the server's hold TTL and checks the sweeper freed them
+(`held → 0`, seats available again) and that confirming an expired hold is `409 HOLD_EXPIRED`. The TTL is 300 s on
+the live service; locally, shorten it to watch expiry in ~20 s:
+```bash
+HOLD_TTL_SECONDS=15 docker compose up --build -d
+./burst.sh http://localhost:8080 --wait-for-expiry      # 18 checks
+```
+
+**Live counts:** while firing, confirming/cancelling and waiting, it shows the show's seat counts updating in
+place, e.g. `available 480 + held 34 + confirmed 1,562 = 2,076 ok`. The three numbers come from one response,
+which the server computes from a single read of the seat rows, so they always add up; every poll is also an
+invariant check. (A line every 5 s when the output isn't a terminal.)
+
+It exits `0` only if every check passes: 16, or 18 with `--wait-for-expiry`.
 
 **Live run** (`./burst.sh https://seat-reserve-lrvt.onrender.com --scale 4 --concurrency 2000 --timeout 100`, Render free instance, ~0.1 CPU / 512 MB, Neon free Postgres; client on a home internet connection):
 ```

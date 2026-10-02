@@ -12,6 +12,9 @@ services:
       REDIS_URL: redis://redis:6379
       JWT_SECRET: local-compose-secret-change-me-0123456789abcdef
       ADMIN_KEY: local-admin-key
+      # Hold length. Shorten it to watch expiry quickly:
+      #   HOLD_TTL_SECONDS=15 docker compose up --build   then   ./burst.sh http://localhost:8080 --wait-for-expiry
+      HOLD_TTL_SECONDS: ${HOLD_TTL_SECONDS:-300}
     depends_on:
       postgres:
         condition: service_healthy

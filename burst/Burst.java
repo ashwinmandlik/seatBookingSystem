@@ -30,15 +30,18 @@ import java.util.regex.Pattern;
  * On-sale stampede against a running seat-reserve service.
  *
  * <pre>
- *   java burst/Burst.java BASE_URL [--scale N] [--concurrency N] [--admin-key KEY]
+ *   java burst/Burst.java BASE_URL [--scale N] [--concurrency N] [--admin-key KEY] [--wait-for-expiry]
  * </pre>
  *
  * Creates a fresh show, then fires every scenario at the same instant: a
  * hot-seat storm, a hot handful, idempotent retries, idempotency-key reuse,
- * per-user-limit floods, spoofed identities and general buyers. While the
- * burst runs it polls the show to check the invariant; afterwards it prints
- * the outcome distribution, verifies the correctness bar from the client's
- * point of view, and reconciles against the server's state and metrics.
+ * per-user-limit floods, spoofed identities, holds and general buyers. While
+ * the burst runs it polls the show to check the invariant and shows the seat
+ * counts live; afterwards it prints the outcome distribution, verifies the
+ * correctness bar from the client's point of view, and reconciles against the
+ * server's state and metrics. Then it walks the holds through their lifecycle:
+ * a third confirmed, a third cancelled, a third left to expire (watched with
+ * --wait-for-expiry, which waits out the server's hold TTL).
  *
  * Exit code: 0 all checks passed, 1 a check failed, 2 setup failed.
  * Plain JDK 21, no dependencies: runs with `java Burst.java`.
@@ -53,6 +56,7 @@ public class Burst {
     static int concurrency = 2000;
     static int perUserLimit = 4;
     static Duration REQUEST_TIMEOUT = Duration.ofSeconds(60);
+    static boolean waitForExpiry = false;
     static HttpClient http;
     static final List<String> SERVER_ERRORS = new CopyOnWriteArrayList<>();
 
@@ -63,6 +67,7 @@ public class Burst {
         KEY_REUSE("same key, different seats"),
         LIMIT("per-user limit flood (10 x limit 4)"),
         SPOOF("spoofed user_id in body"),
+        HOLD("holds (\"hold\": true)"),
         GENERAL("general buyers");
 
         final String label;
@@ -75,16 +80,21 @@ public class Burst {
     record Req(Scenario scenario, String user, List<String> seats, String key, boolean keyInHeader, String spoofAs) {
     }
 
+    /** {@code state} is the reservation's status on success ("confirmed" or "held"); {@code ttlSeconds} a hold's length. */
     record Res(Req req, int status, String code, String reservationId, String userId, List<String> seats,
-               boolean replayed, long micros, String transportError) {
+               String state, long ttlSeconds, boolean replayed, long micros, String transportError) {
 
         boolean success() {
             return status == 200 || status == 201;
         }
 
+        boolean newHold() {
+            return status == 201 && "held".equals(state);
+        }
+
         String outcome() {
             if (transportError != null) return "transport-error";
-            if (status == 201) return "confirmed";
+            if (status == 201) return newHold() ? "held" : "confirmed";
             if (status == 200) return "idempotent-replay";
             if (status >= 500) return "5xx";
             return code == null ? String.valueOf(status) : code.toLowerCase().replace('_', '-');
@@ -129,7 +139,8 @@ public class Burst {
         List<Req> plan = new ArrayList<>();
         List<String> seats = new ArrayList<>();
         int hotStorm = 1000 * scale, perHandful = 200 * scale, retryUsers = 100 * scale, reuseUsers = 50 * scale;
-        int limitUsers = 25 * scale, spoofs = 20 * scale, general = 3000 * scale, generalSeats = 1500 * scale;
+        int limitUsers = 25 * scale, spoofs = 20 * scale, holders = 100 * scale;
+        int general = 3000 * scale, generalSeats = 1500 * scale;
 
         seats.add("A1");
         for (int i = 0; i < hotStorm; i++) {
@@ -165,6 +176,12 @@ public class Burst {
         for (int i = 0; i < spoofs; i++) {
             seats.add("S" + i);
             plan.add(new Req(Scenario.SPOOF, "spoofer-" + i, List.of("S" + i), key(), false, "victim"));
+        }
+        // Holds: one seat each, uncontended, so every one must come back 201 "held". After the
+        // burst they are walked through their lifecycle (confirm / cancel / expire).
+        for (int i = 0; i < holders; i++) {
+            seats.add("H" + i);
+            plan.add(new Req(Scenario.HOLD, "holder-" + i, List.of("H" + i), key(), false, null));
         }
         for (int i = 0; i < generalSeats; i++) {
             seats.add("G" + i);
@@ -202,29 +219,9 @@ public class Burst {
         Map<String, Double> metricsBefore = scrape();
 
         // Fire --------------------------------------------------------------
-        AtomicBoolean bursting = new AtomicBoolean(true);
-        List<String> invariantViolations = new CopyOnWriteArrayList<>();
-        AtomicInteger polls = new AtomicInteger();
-        Thread poller = Thread.ofVirtual().start(() -> {
-            while (bursting.get()) {
-                try {
-                    Http s = send("GET", "/shows/" + showId, null, null, Map.of());
-                    if (s.status == 200) {
-                        polls.incrementAndGet();
-                        long a = num(s.body, "available"), h = num(s.body, "held"), c = num(s.body, "confirmed"),
-                                t = num(s.body, "total");
-                        if (a + h + c != t) {
-                            invariantViolations.add(a + "+" + h + "+" + c + "!=" + t);
-                        }
-                    }
-                    Thread.sleep(250);
-                } catch (Exception ignored) {
-                    // a failed poll is not an invariant violation
-                }
-            }
-        });
-
+        AtomicInteger answered = new AtomicInteger();
         line("firing      %d requests at once (max %d in flight)...", plan.size(), concurrency);
+        Live live = new Live(showId, 250, () -> String.format("responses %,d/%,d", answered.get(), plan.size()));
         Semaphore inFlight = new Semaphore(concurrency);
         CountDownLatch go = new CountDownLatch(1);
         List<Future<Res>> futures = new ArrayList<>(plan.size());
@@ -238,6 +235,7 @@ public class Burst {
                         return reserve(showId, r, tokens.get(r.user()));
                     } finally {
                         inFlight.release();
+                        answered.incrementAndGet();
                     }
                 }));
             }
@@ -249,23 +247,243 @@ public class Burst {
         for (Future<Res> f : futures) {
             results.add(f.get());
         }
-        bursting.set(false);
-        poller.join();
+        live.stop();
 
         // Let the seat gauges refresh, then read the server's view -----------
         Thread.sleep(3000);
         Http finalShow = send("GET", "/shows/" + showId, null, null, Map.of());
         Map<String, Double> metricsAfter = scrape();
 
-        report(showId, seats.size(), results, seconds, finalShow.body, invariantViolations, polls.get(),
-                metricsBefore, metricsAfter);
+        List<String[]> checks = report(showId, seats.size(), results, seconds, finalShow.body, live.violations,
+                live.polls.get(), metricsBefore, metricsAfter);
+
+        // Holds: confirm / cancel / expire, after the reconciliation snapshot so it stays exact.
+        line("");
+        line("Hold lifecycle");
+        checks.addAll(holdLifecycle(showId, results, tokens, finalShow.body));
+
+        printChecks(checks);
+    }
+
+    // ------------------------------------------------------------ live view
+
+    static final boolean TTY = isTerminal();
+
+    /**
+     * Polls the show while something runs. Every poll checks the invariant, and the counts
+     * are shown as one line updated in place (a line every ~5 s when output isn't a terminal).
+     * The three counts in a line come from one response, which the server computes from a
+     * single read of the seat rows: they are one moment's numbers and always sum to the total.
+     */
+    static final class Live {
+        final List<String> violations = new CopyOnWriteArrayList<>();
+        final AtomicInteger polls = new AtomicInteger();
+        volatile long available = -1, held = -1, confirmed = -1;
+        private final AtomicBoolean running = new AtomicBoolean(true);
+        private final Thread thread;
+
+        Live(String showId, long intervalMillis, java.util.function.Supplier<String> progress) {
+            thread = Thread.ofVirtual().start(() -> {
+                long lastLine = 0;
+                while (running.get()) {
+                    try {
+                        Http s = send("GET", "/shows/" + showId, null, null, Map.of());
+                        if (s.status == 200) {
+                            polls.incrementAndGet();
+                            long a = num(s.body, "available"), h = num(s.body, "held"), c = num(s.body, "confirmed"),
+                                    t = num(s.body, "total");
+                            if (a + h + c != t) {
+                                violations.add(a + "+" + h + "+" + c + "!=" + t);
+                            }
+                            available = a;
+                            held = h;
+                            confirmed = c;
+                            String text = String.format("  live       available %,d + held %,d + confirmed %,d = %,d %s   %s",
+                                    a, h, c, a + h + c, a + h + c == t ? "ok" : "!= " + t, progress.get());
+                            if (TTY) {
+                                System.out.print("\r" + String.format("%-110s", text));
+                                System.out.flush();
+                            } else if (System.nanoTime() - lastLine > 5_000_000_000L) {
+                                line(text);
+                                lastLine = System.nanoTime();
+                            }
+                        }
+                        Thread.sleep(intervalMillis);
+                    } catch (Exception ignored) {
+                        // a failed poll is not an invariant violation
+                    }
+                }
+            });
+        }
+
+        void stop() throws InterruptedException {
+            running.set(false);
+            thread.join();
+            if (TTY && polls.get() > 0) {
+                System.out.println();
+            }
+        }
+    }
+
+    static boolean isTerminal() {
+        java.io.Console c = System.console();
+        if (c == null) {
+            return false;
+        }
+        try {
+            // Java 22+ returns a Console even when output is redirected; ask it.
+            return (Boolean) java.io.Console.class.getMethod("isTerminal").invoke(c);
+        } catch (ReflectiveOperationException e) {
+            return true;   // Java 21: a non-null console is a terminal
+        }
+    }
+
+    // ---------------------------------------------------------- hold lifecycle
+
+    /**
+     * Walks the burst's holds through their lifecycle, all at once: a third confirmed, a third
+     * cancelled, a third left to expire. With --wait-for-expiry it waits out the server's hold
+     * TTL and checks the sweeper freed them. Every step is checked against the show's counts
+     * and the metrics.
+     */
+    static List<String[]> holdLifecycle(String showId, List<Res> results, Map<String, String> tokens, String showAfterBurst)
+            throws Exception {
+        List<String[]> checks = new ArrayList<>();
+        List<Res> requested = results.stream().filter(r -> r.req().scenario() == Scenario.HOLD).toList();
+        List<Res> held = requested.stream().filter(Res::newHold).toList();
+        long ttl = held.isEmpty() ? -1 : held.getFirst().ttlSeconds();
+        check(checks, held.size() == requested.size() && ttl > 0,
+                "\"hold\": true -> 201 held with a deadline (" + held.size() + "/" + requested.size() + ")",
+                requested.size() - held.size() + " hold requests were not 201 held");
+        line(String.format("  placed     %d holds during the burst (server hold TTL %ds); show said held %d",
+                held.size(), ttl, num(showAfterBurst, "held")));
+        if (held.isEmpty()) {
+            return checks;
+        }
+
+        int third = held.size() / 3;
+        List<Res> toConfirm = held.subList(0, third);
+        List<Res> toCancel = held.subList(third, 2 * third);
+        List<Res> toExpire = held.subList(2 * third, held.size());
+
+        // Confirm and cancel fire together; the show is polled live the whole time.
+        Map<String, Double> before = scrape();
+        Http s0 = send("GET", "/shows/" + showId, null, null, Map.of());
+        AtomicInteger done = new AtomicInteger();
+        int total = toConfirm.size() + toCancel.size();
+        Live live = new Live(showId, 250, () -> String.format("confirm/cancel %d/%d", done.get(), total));
+        List<Future<Http>> confirms = new ArrayList<>(), cancels = new ArrayList<>();
+        try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            for (Res r : toConfirm) confirms.add(pool.submit(() -> transition(r, "confirm", tokens, done)));
+            for (Res r : toCancel) cancels.add(pool.submit(() -> transition(r, "cancel", tokens, done)));
+        }
+        live.stop();
+        Http s1 = send("GET", "/shows/" + showId, null, null, Map.of());
+
+        long confirmedOk = countOk(confirms, "confirmed"), cancelledOk = countOk(cancels, "cancelled");
+        line(String.format("  confirm    %d of %d -> 200 confirmed      cancel %d of %d -> 200 cancelled   (fired at once)",
+                confirmedOk, toConfirm.size(), cancelledOk, toCancel.size()));
+        long dHeld = num(s1.body, "held") - num(s0.body, "held");
+        long dConfirmed = num(s1.body, "confirmed") - num(s0.body, "confirmed");
+        long dAvailable = num(s1.body, "available") - num(s0.body, "available");
+        line(String.format("  show       held %+d   confirmed %+d   available %+d   -> held %d",
+                dHeld, dConfirmed, dAvailable, num(s1.body, "held")));
+        check(checks, confirmedOk == toConfirm.size() && cancelledOk == toCancel.size(),
+                "confirm -> 200 confirmed, cancel -> 200 cancelled (" + toConfirm.size() + " + " + toCancel.size() + " at once)",
+                confirmedOk + "/" + toConfirm.size() + " confirmed, " + cancelledOk + "/" + toCancel.size() + " cancelled");
+        check(checks, dHeld == -total && dConfirmed == toConfirm.size() && dAvailable == toCancel.size()
+                        && live.violations.isEmpty(),
+                "show follows: held -" + total + ", confirmed +" + toConfirm.size() + ", available +" + toCancel.size()
+                        + "; invariant on every poll (" + live.polls.get() + ")",
+                "held " + dHeld + ", confirmed " + dConfirmed + ", available " + dAvailable + " " + live.violations);
+
+        if (!waitForExpiry) {
+            line(String.format("  expiry     %d holds left to expire on their own ~%ds after the burst"
+                    + " (--wait-for-expiry watches it)", toExpire.size(), ttl));
+            Map<String, Double> after = scrape();
+            metricCheck(checks, before, after, toConfirm.size(), toCancel.size(), 0);
+            return checks;
+        }
+
+        // Wait for the sweeper: the holds were placed during the burst, so ttl from now is an upper
+        // bound on their deadline; allow a minute on top for the sweeper and a slow poll.
+        long deadline = System.nanoTime() + (ttl + 60) * 1_000_000_000L;
+        long waitStart = System.nanoTime();
+        line("waiting     for %d unconfirmed holds to expire (TTL %ds)...", toExpire.size(), ttl);
+        Live wait = new Live(showId, 1000, () -> String.format("waited %ds", (System.nanoTime() - waitStart) / 1_000_000_000L));
+        while (System.nanoTime() < deadline && wait.held != 0) {
+            Thread.sleep(500);
+        }
+        wait.stop();
+        long waited = (System.nanoTime() - waitStart) / 1_000_000_000L;
+        Http s2 = send("GET", "/shows/" + showId, null, null, Map.of());
+        long freed = num(s2.body, "available") - num(s1.body, "available");
+        line(String.format("  expiry     held %d -> %d after %ds; available %+d", num(s1.body, "held"),
+                num(s2.body, "held"), waited, freed));
+        check(checks, num(s2.body, "held") == 0 && freed == toExpire.size() && wait.violations.isEmpty(),
+                "unconfirmed holds expire on their own: held -> 0, seats available again (" + toExpire.size()
+                        + "); invariant on every poll (" + wait.polls.get() + ")",
+                "held " + num(s2.body, "held") + ", available +" + freed + " " + wait.violations);
+
+        // An expired hold can't be confirmed any more.
+        List<Future<Http>> late = new ArrayList<>();
+        try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            for (Res r : toExpire) late.add(pool.submit(() -> transition(r, "confirm", tokens, new AtomicInteger())));
+        }
+        long refused = 0;
+        for (Future<Http> f : late) {
+            Http h = f.get();
+            if (h.status == 409 && "HOLD_EXPIRED".equals(str(h.body, "code"))) refused++;
+        }
+        line(String.format("  late       confirm of an expired hold -> 409 HOLD_EXPIRED: %d of %d", refused, toExpire.size()));
+        check(checks, refused == toExpire.size(), "confirming an expired hold -> 409 HOLD_EXPIRED (" + toExpire.size() + ")",
+                refused + "/" + toExpire.size() + " refused");
+        Map<String, Double> after = scrape();
+        metricCheck(checks, before, after, toConfirm.size(), toCancel.size(), toExpire.size());
+        return checks;
+    }
+
+    static Http transition(Res r, String action, Map<String, String> tokens, AtomicInteger done) {
+        try {
+            return send("POST", "/reservations/" + r.reservationId() + "/" + action, tokens.get(r.req().user()), null, Map.of());
+        } catch (Exception e) {
+            return new Http(-1, e.getClass().getSimpleName() + ": " + e.getMessage(), false, 0);
+        } finally {
+            done.incrementAndGet();
+        }
+    }
+
+    static long countOk(List<Future<Http>> fs, String state) throws Exception {
+        long ok = 0;
+        for (Future<Http> f : fs) {
+            Http h = f.get();
+            if (h.status == 200 && state.equals(str(h.body, "status"))) ok++;
+        }
+        return ok;
+    }
+
+    static void metricCheck(List<String[]> checks, Map<String, Double> before, Map<String, Double> after,
+                            long confirmed, long cancelled, long expired) {
+        if (before.isEmpty() || after.isEmpty()) {
+            return;
+        }
+        long dc = delta(before, after, "confirmed"), dx = delta(before, after, "cancelled"), de = delta(before, after, "expired");
+        check(checks, dc == confirmed && dx == cancelled && de == expired,
+                "hold metrics reconcile (confirmed +" + confirmed + ", cancelled +" + cancelled + ", expired +" + expired + ")",
+                "confirmed +" + dc + ", cancelled +" + dx + ", expired +" + de
+                        + " (other traffic or several instances behind the LB also move these)");
+    }
+
+    static long delta(Map<String, Double> before, Map<String, Double> after, String key) {
+        return Math.round(after.getOrDefault(key, 0.0) - before.getOrDefault(key, 0.0));
     }
 
     // ------------------------------------------------------------------ report
 
-    static void report(String showId, int totalSeats, List<Res> results, double seconds, String showBody,
-                       List<String> invariantViolations, int polls,
-                       Map<String, Double> before, Map<String, Double> after) {
+    /** Prints the burst's report and returns its checks (printed at the very end, after the hold lifecycle). */
+    static List<String[]> report(String showId, int totalSeats, List<Res> results, double seconds, String showBody,
+                                 List<String> invariantViolations, int polls,
+                                 Map<String, Double> before, Map<String, Double> after) {
         List<Long> latencies = results.stream().filter(r -> r.transportError() == null)
                 .map(Res::micros).sorted().toList();
         line("");
@@ -408,8 +626,11 @@ public class Burst {
 
         if (!before.isEmpty() && !after.isEmpty()) {
             double dConfirmed = after.getOrDefault("confirmed", 0.0) - before.getOrDefault("confirmed", 0.0);
-            long seenConfirmed = results.stream().filter(r -> r.status() == 201).count();
-            line("  metrics    reservations_confirmed_total +%.0f   declined: %s", dConfirmed, declineDelta(before, after));
+            long dHeld = delta(before, after, "held");
+            long seenConfirmed = results.stream().filter(r -> r.status() == 201 && !r.newHold()).count();
+            long seenHeld = results.stream().filter(Res::newHold).count();
+            line("  metrics    reservations_confirmed_total +%.0f   reservations_held_total +%d   declined: %s",
+                    dConfirmed, dHeld, declineDelta(before, after));
             Map<String, Long> seenDeclines = new TreeMap<>();
             results.stream().filter(r -> r.status() == 200).forEach(r -> seenDeclines.merge("idempotent-replay", 1L, Long::sum));
             results.stream().filter(r -> r.status() == 409 && r.code() != null)
@@ -418,15 +639,22 @@ public class Burst {
             if (Math.round(dConfirmed) != seenConfirmed) {
                 metricMismatches.add("confirmed +" + Math.round(dConfirmed) + " vs " + seenConfirmed + " seen");
             }
+            if (dHeld != seenHeld) {
+                metricMismatches.add("held +" + dHeld + " vs " + seenHeld + " seen");
+            }
             seenDeclines.forEach((reason, n) -> {
                 long d = Math.round(after.getOrDefault("declined:" + reason, 0.0) - before.getOrDefault("declined:" + reason, 0.0));
                 if (d != n) metricMismatches.add(reason + " +" + d + " vs " + n + " seen");
             });
             check(checks, metricMismatches.isEmpty(),
-                    "metrics reconcile with responses (confirmed and every decline reason)",
+                    "metrics reconcile with responses (confirmed, held and every decline reason)",
                     String.join("; ", metricMismatches) + " (other traffic or several instances behind the LB also move these)");
         }
 
+        return checks;
+    }
+
+    static void printChecks(List<String[]> checks) {
         line("");
         line("Checks");
         boolean allPass = true;
@@ -453,6 +681,8 @@ public class Burst {
                 "Created", r -> r.status() == 201, "Replayed", r -> r.status() == 200);
         card(results, "SAME KEY, DIFFERENT BODY", r -> r.req().scenario() == Scenario.KEY_REUSE,
                 "Created", r -> r.status() == 201, "Key reused", r -> "IDEMPOTENCY_KEY_REUSED".equals(r.code()));
+        card(results, "HOLDS (\"hold\": true)", r -> r.req().scenario() == Scenario.HOLD,
+                "Held", Res::newHold, "Seat taken", r -> "SEAT_TAKEN".equals(r.code()));
         card(results, "GENERAL BUYERS", r -> r.req().scenario() == Scenario.GENERAL,
                 "Confirmed", r -> r.status() == 201, "Seat taken", r -> "SEAT_TAKEN".equals(r.code()));
     }
@@ -500,6 +730,7 @@ public class Burst {
         body.put("seats", r.seats());
         if (!r.keyInHeader()) body.put("idempotency_key", r.key());
         if (r.spoofAs() != null) body.put("user_id", r.spoofAs());
+        if (r.scenario() == Scenario.HOLD) body.put("hold", true);
         Map<String, String> headers = r.keyInHeader() ? Map.of("Idempotency-Key", r.key()) : Map.of();
         try {
             Http h = send("POST", "/shows/" + showId + "/reserve", token, json(body), headers);
@@ -508,12 +739,24 @@ public class Burst {
                 SERVER_ERRORS.add("HTTP " + h.status + " " + snippet.substring(0, Math.min(200, snippet.length())));
             }
             String code = h.status >= 400 ? str(h.body, "code") : null;
-            return new Res(r, h.status, code, h.status < 300 ? str(h.body, "reservation_id") : null,
-                    h.status < 300 ? str(h.body, "user_id") : null, h.status < 300 ? seats(h.body) : List.of(),
-                    h.replayed, h.micros, null);
+            boolean ok = h.status < 300;
+            return new Res(r, h.status, code, ok ? str(h.body, "reservation_id") : null,
+                    ok ? str(h.body, "user_id") : null, ok ? seats(h.body) : List.of(),
+                    ok ? str(h.body, "status") : null, ok ? holdSeconds(h.body) : -1, h.replayed, h.micros, null);
         } catch (Exception e) {
-            return new Res(r, -1, null, null, null, List.of(), false, 0,
+            return new Res(r, -1, null, null, null, List.of(), null, -1, false, 0,
                     e.getClass().getSimpleName() + ": " + e.getMessage());
+        }
+    }
+
+    /** A hold's length (expires_at - created_at, both from the server's clock), or -1 if it isn't a hold. */
+    static long holdSeconds(String body) {
+        String expires = str(body, "expires_at"), created = str(body, "created_at");
+        if (expires == null || created == null) return -1;
+        try {
+            return Math.round(Duration.between(java.time.Instant.parse(created), java.time.Instant.parse(expires)).toMillis() / 1000.0);
+        } catch (Exception e) {
+            return -1;
         }
     }
 
@@ -636,6 +879,9 @@ public class Burst {
                     continue;
                 }
                 if (l.startsWith("reservations_confirmed_total")) m.merge("confirmed", v, Double::sum);
+                if (l.startsWith("reservations_held_total")) m.merge("held", v, Double::sum);
+                if (l.startsWith("reservations_cancelled_total")) m.merge("cancelled", v, Double::sum);
+                if (l.startsWith("holds_expired_total")) m.merge("expired", v, Double::sum);
                 if (l.startsWith("reservations_declined_total")) {
                     Matcher rm = reason.matcher(l);
                     if (rm.find()) m.merge("declined:" + rm.group(1), v, Double::sum);
@@ -694,7 +940,8 @@ public class Burst {
 
     static void parseArgs(String[] args) {
         if (args.length == 0 || args[0].startsWith("-")) {
-            System.err.println("usage: java burst/Burst.java BASE_URL [--scale N] [--concurrency N] [--timeout SECONDS] [--admin-key KEY]");
+            System.err.println("usage: java burst/Burst.java BASE_URL [--scale N] [--concurrency N] [--timeout SECONDS]"
+                    + " [--admin-key KEY] [--wait-for-expiry]");
             System.exit(2);
         }
         base = args[0].replaceAll("/+$", "");
@@ -704,6 +951,7 @@ public class Burst {
                 case "--concurrency" -> concurrency = Integer.parseInt(args[++i]);
                 case "--admin-key" -> adminKey = args[++i];
                 case "--timeout" -> REQUEST_TIMEOUT = Duration.ofSeconds(Long.parseLong(args[++i]));
+                case "--wait-for-expiry" -> waitForExpiry = true;
                 default -> {
                     System.err.println("unknown option " + args[i]);
                     System.exit(2);
