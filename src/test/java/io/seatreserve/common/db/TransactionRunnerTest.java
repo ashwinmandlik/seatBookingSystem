@@ -4,7 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
-import io.seatreserve.reservation.ReservationDeclines.SeatsUnavailable;
+import io.seatreserve.reservation.service.ReservationDeclines.SeatsUnavailable;
 import java.sql.SQLException;
 import java.util.List;
 import java.util.Map;

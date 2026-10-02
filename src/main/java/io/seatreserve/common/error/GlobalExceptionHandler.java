@@ -1,7 +1,7 @@
 package io.seatreserve.common.error;
 
 import com.fasterxml.jackson.databind.PropertyNamingStrategies;
-import io.seatreserve.observability.RequestCorrelationFilter;
+import io.seatreserve.observability.filter.RequestCorrelationFilter;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.util.LinkedHashMap;
 import java.util.Map;

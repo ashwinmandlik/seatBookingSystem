@@ -1,7 +1,7 @@
 package io.seatreserve.common.error;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
-import io.seatreserve.observability.RequestCorrelationFilter;
+import io.seatreserve.observability.filter.RequestCorrelationFilter;
 import java.util.Map;
 import org.slf4j.MDC;
 

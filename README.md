@@ -443,7 +443,8 @@ deployment is Render.)
 | `IDLE_AWARE_ENABLED` / `IDLE_AWARE_MAX_IDLE_MINUTES` | `false` / `60` | leave an idle, pause-when-idle database alone |
 | `DB_POOL_SIZE` / `DB_CONNECTION_TIMEOUT_MS` | `20` / `60000` | the pool is the backpressure valve |
 | `DB_MIN_IDLE` / `DB_IDLE_TIMEOUT_MS` | pool size / `600000` | `0` / `60000` lets the pool shrink to zero when idle |
-| `HOT_SEATS_ENABLED` / `HOT_SEATS_CACHE_TTL_MS` | `true` / `2000` | in-memory hot-seat gate |
+| `HOT_SEATS_ENABLED` / `HOT_SEATS_CACHE_TTL_MS` | `true` / `2000` | in-memory hot-seat gate; the 2 s default bounds staleness across instances (Render, a single instance, uses `600000`) |
+| `HOT_SEATS_MAX_ENTRIES` | `500000` | cap on cached taken seats (Render: `100000`, ~20 MB) |
 | `REDIS_ENABLED` / `REDIS_URL` | `false` / `redis://localhost:6379` | optional shared cache |
 | `SERVER_MAX_CONNECTIONS` / `SERVER_ACCEPT_COUNT` | `20000` / `2000` | Tomcat connection limits |
 | `LOG_FORMAT` | `ecs` | or `logstash` |
@@ -454,12 +455,31 @@ deployment is Render.)
 
 ```
 src/main/java/io/seatreserve/
-  auth/            JWT resource server, demo token issuer
-  show/            shows, seats, counts
-  reservation/     reserve / confirm / cancel, quota, idempotency, hold sweeper, hot-seat gate, Redis L2
-  observability/   metrics, seat gauges, readiness probe, request-id + user MDC filters
-  common/          error model, transaction retry
+  SeatReserveApplication.java
+  reservation/            reserve / confirm / cancel / holds (the core)
+    api/                  controller, request/response, FastDeclineFilter (409 before the framework stack)
+    service/              ReservationService (the transaction), declines, SeatReleaser
+    repository/           reservations, seats (row locks), quota, idempotency keys
+    model/                Reservation, ReservationStatus
+    cache/                HotSeatGate (striped locks + known-taken L1), optional Redis L2
+    expiry/               HoldSweeper (scheduler) + HoldExpiry (one hold per transaction)
+  show/
+    api/  service/  repository/  model/
+  auth/                   JWT resource server, token issuer (single + bulk), FastJwtVerifier
+  observability/
+    filter/               request id + user MDC, access log sampling, write bulkhead
+    metrics/              reservation metrics, per-show seat gauges
+    health/               DB readiness indicator, /health/live and /health/ready
+  config/                 typed properties, Tomcat tuning, DATABASE_URL parsing
+  common/
+    error/                ApiError, ErrorCode, GlobalExceptionHandler
+    db/                   TransactionRunner (retries transient errors)
+    idle/                 IdleAwareSchedule (lets a pause-when-idle database sleep)
 src/main/resources/db/migration/   Flyway: V1 schema, V2 hold lifecycle
-burst/Burst.java   one-file load generator behind ./burst.sh
-deploy/            Caddyfile, setup-vm.sh
+burst/Burst.java          one-file load generator behind ./burst.sh
+deploy/                   Caddyfile, setup-vm.sh (self-hosted VM alternative)
+render.yaml               Render Blueprint (the live deployment)
 ```
+
+Packages are **by feature first, then by layer**: everything about reservations lives under `reservation/`, so a change
+to the reserve flow touches one folder, and helpers that only one feature needs stay package-private there.
