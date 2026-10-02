@@ -107,7 +107,10 @@ public class Burst {
     static void run(String[] args) throws Exception {
         parseArgs(args);
         http = HttpClient.newBuilder()
-                .version(HttpClient.Version.HTTP_2)   // multiplexed over TLS; falls back to 1.1 on plain http
+                // HTTP/1.1: one connection per in-flight request, like most load tools. Java's
+                // HTTP/2 client multiplexes everything over one connection and fails with "too many
+                // concurrent streams" once the edge proxy's per-connection limit (~100) is reached.
+                .version(HttpClient.Version.HTTP_1_1)
                 .connectTimeout(Duration.ofSeconds(10))
                 .executor(Executors.newVirtualThreadPerTaskExecutor())
                 .build();
@@ -189,7 +192,8 @@ public class Burst {
         Set<String> users = new HashSet<>();
         plan.forEach(r -> users.add(r.user()));
         long mintStart = System.nanoTime();
-        Map<String, String> tokens = mintTokens(users);
+        Map<String, String> bulk = mintTokensInBulk(users);
+        Map<String, String> tokens = bulk != null ? bulk : mintTokens(users);
         line("tokens      %d users minted in %.1fs", tokens.size(), (System.nanoTime() - mintStart) / 1e9);
 
         Map<String, Double> metricsBefore = scrape();
@@ -541,6 +545,28 @@ public class Burst {
                 Thread.sleep(100L * attempt);
             }
         }
+    }
+
+    /**
+     * One call to POST /auth/tokens (admin) instead of one call per user; null
+     * if the service doesn't offer it, so the caller falls back to minting one by one.
+     */
+    static Map<String, String> mintTokensInBulk(Set<String> users) throws Exception {
+        Map<String, String> tokens = new HashMap<>();
+        List<String> all = new ArrayList<>(users);
+        for (int from = 0; from < all.size(); from += 20_000) {
+            List<String> batch = all.subList(from, Math.min(all.size(), from + 20_000));
+            Http h = sendWithRetry("POST", "/auth/tokens", null, json(Map.of("user_ids", batch)),
+                    Map.of("X-Admin-Key", adminKey));
+            if (h.status != 200) {
+                return null;
+            }
+            Matcher m = Pattern.compile("\"([^\"]+)\"\\s*:\\s*\"(eyJ[^\"]+)\"").matcher(h.body);
+            while (m.find()) {
+                tokens.put(m.group(1), m.group(2));
+            }
+        }
+        return tokens.keySet().containsAll(users) ? tokens : null;
     }
 
     static Map<String, String> mintTokens(Set<String> users) throws Exception {
