@@ -1,0 +1,12 @@
+# Only the Gradle wrapper, build files and src are needed to build the image.
+.git
+.gradle
+.idea
+.vscode
+build
+bin
+out
+*.md
+docker-compose.yml
+fly.toml
+burst

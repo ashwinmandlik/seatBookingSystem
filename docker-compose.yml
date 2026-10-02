@@ -1,4 +1,27 @@
+# Full stack, built and run exactly as deployed:  docker compose up --build
+# API on http://localhost:8080  (/readyz, /actuator/prometheus)
 services:
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      # Provider-style URL on purpose: the same format Neon/Fly/Render hand out.
+      DATABASE_URL: postgresql://seatreserve:seatreserve@postgres:5432/seatreserve
+      REDIS_ENABLED: "true"
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: local-compose-secret-change-me-0123456789abcdef
+      ADMIN_KEY: local-admin-key
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 1g   # same as the Fly VM
+
   postgres:
     image: postgres:16-alpine
     environment:

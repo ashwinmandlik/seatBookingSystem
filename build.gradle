@@ -52,3 +52,11 @@ tasks.named('bootJar') {
 tasks.named('jar') {
     enabled = false
 }
+
+// Local Postgres 16 without Docker: ./gradlew devDb (then ./gradlew bootRun).
+tasks.register('devDb', JavaExec) {
+    group = 'application'
+    description = 'Runs a throwaway Postgres 16 on localhost:5432 (no Docker needed).'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'io.seatreserve.dev.LocalPostgres'
+}
