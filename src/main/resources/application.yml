@@ -17,6 +17,10 @@ spring:
       # request that waits succeeds or gets a clean 4xx; one that times out
       # becomes a 503.
       connection-timeout: ${DB_CONNECTION_TIMEOUT_MS:60000}
+      # Defaults keep the pool full. On a pause-when-idle database set
+      # DB_MIN_IDLE=0 and a short DB_IDLE_TIMEOUT_MS so idle connections close.
+      minimum-idle: ${DB_MIN_IDLE:${DB_POOL_SIZE:20}}
+      idle-timeout: ${DB_IDLE_TIMEOUT_MS:600000}
   flyway:
     enabled: true
   data:
@@ -55,6 +59,11 @@ seatreserve:
     # Every instance runs the sweeper; SKIP LOCKED splits the work safely.
     enabled: ${HOLD_SWEEPER_ENABLED:true}
     interval-ms: ${HOLD_SWEEP_INTERVAL_MS:1000}
+  idle-aware:
+    # Off by default. On a database that pauses when idle and bills for awake
+    # time (e.g. Neon free), background jobs touch it only when needed.
+    enabled: ${IDLE_AWARE_ENABLED:false}
+    max-idle-minutes: ${IDLE_AWARE_MAX_IDLE_MINUTES:60}
   hot-seats:
     # In-memory fast-fail for contended seats. Only ever declines; the
     # database still makes every decision to sell.

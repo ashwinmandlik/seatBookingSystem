@@ -118,6 +118,14 @@ public class ReservationRepository {
                 .optional();
     }
 
+    /** Earliest deadline among live holds, for the idle-aware sweeper. */
+    public Optional<java.time.Instant> earliestHoldDeadline() {
+        return jdbc.sql("SELECT min(expires_at) FROM reservations WHERE status = 'HELD'")
+                .query((rs, i) -> rs.getTimestamp(1))
+                .optional()   // min() over no rows is one NULL row: optional() maps it to empty
+                .map(Timestamp::toInstant);
+    }
+
     public Reservation updateStatus(UUID id, ReservationStatus status) {
         return jdbc.sql("UPDATE reservations SET status = ?, updated_at = now() WHERE id = ? RETURNING *")
                 .params(status.name(), id)

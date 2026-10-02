@@ -24,7 +24,15 @@ public record SeatReserveProperties(
         @Min(1) long holdTtlSeconds,
         @NotBlank @Size(min = 32) String jwtSecret,
         @NotBlank String adminKey,
-        @Valid @DefaultValue HotSeats hotSeats) {
+        @Valid @DefaultValue HotSeats hotSeats,
+        @Valid @DefaultValue IdleAware idleAware) {
+
+    /**
+     * @param enabled        let background jobs leave an idle database alone (for pause-when-idle databases)
+     * @param maxIdleMinutes the longest a sweep or gauge refresh is skipped while idle
+     */
+    public record IdleAware(@DefaultValue("false") boolean enabled, @DefaultValue("60") @Min(1) long maxIdleMinutes) {
+    }
 
     /**
      * @param enabled        turn the gate and caches off entirely (correctness does not depend on them)

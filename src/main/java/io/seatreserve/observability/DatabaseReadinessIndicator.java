@@ -32,6 +32,9 @@ public class DatabaseReadinessIndicator implements HealthIndicator, DisposableBe
         probe.setPoolName("readiness-probe");
         probe.setMaximumPoolSize(1);
         probe.setMinimumIdle(0);
+        // Close the probe's connection soon after a check, so it never keeps a
+        // pause-when-idle database awake.
+        probe.setIdleTimeout(30_000);
         probe.setConnectionTimeout(TIMEOUT_SECONDS * 1000L);
         probe.setValidationTimeout(TIMEOUT_SECONDS * 1000L);
         // Never block or fail application startup on the probe itself.

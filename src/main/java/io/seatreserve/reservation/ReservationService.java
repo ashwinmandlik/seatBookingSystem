@@ -2,6 +2,7 @@ package io.seatreserve.reservation;
 
 import io.seatreserve.common.db.TransactionRunner;
 import io.seatreserve.common.error.DomainException;
+import io.seatreserve.common.idle.IdleAwareSchedule;
 import io.seatreserve.observability.ReservationMetrics;
 import io.seatreserve.config.SeatReserveProperties;
 import io.seatreserve.reservation.ReservationDeclines.HoldExpired;
@@ -64,12 +65,13 @@ public class ReservationService {
     private final HotSeatGate hotSeats;
     private final TransactionRunner tx;
     private final ReservationMetrics metrics;
+    private final IdleAwareSchedule schedule;
     private final SeatReserveProperties props;
 
     public ReservationService(ShowService shows, IdempotencyRepository idempotency, QuotaRepository quotas,
                               SeatInventory seats, ReservationRepository reservations, SeatReleaser releaser,
                               HotSeatGate hotSeats, TransactionRunner tx, ReservationMetrics metrics,
-                              SeatReserveProperties props) {
+                              IdleAwareSchedule schedule, SeatReserveProperties props) {
         this.shows = shows;
         this.idempotency = idempotency;
         this.quotas = quotas;
@@ -79,6 +81,7 @@ public class ReservationService {
         this.hotSeats = hotSeats;
         this.tx = tx;
         this.metrics = metrics;
+        this.schedule = schedule;
         this.props = props;
     }
 
@@ -92,7 +95,9 @@ public class ReservationService {
             if (result.replayed()) {
                 metrics.replayed();
             } else {
+                schedule.seatsChanged();
                 if (r.status() == ReservationStatus.HELD) {
+                    schedule.holdCreated(r.expiresAt());
                     metrics.held();
                 } else {
                     metrics.confirmed();
@@ -210,6 +215,7 @@ public class ReservationService {
             };
         });
         if (t.changed()) {
+            schedule.seatsChanged();
             metrics.confirmed();
             log.atInfo().addKeyValue("reservation_id", reservationId).log("Hold {} confirmed", reservationId);
         }
@@ -238,6 +244,7 @@ public class ReservationService {
         if (t.changed()) {
             // After commit: the seats are free again, so stop fast-failing them.
             hotSeats.forget(cancelled.showId(), cancelled.seats());
+            schedule.seatsChanged();
             metrics.cancelled();
             log.atInfo().addKeyValue("reservation_id", reservationId).addKeyValue("seats", cancelled.seats())
                     .log("Reservation {} cancelled", reservationId);

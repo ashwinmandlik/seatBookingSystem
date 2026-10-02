@@ -1,6 +1,7 @@
 package io.seatreserve.observability;
 
 import io.micrometer.core.instrument.MeterRegistry;
+import io.seatreserve.common.idle.IdleAwareSchedule;
 import io.micrometer.core.instrument.MultiGauge;
 import io.micrometer.core.instrument.MultiGauge.Row;
 import io.micrometer.core.instrument.Tags;
@@ -34,14 +35,16 @@ public class SeatGauges {
     }
 
     private final JdbcClient jdbc;
+    private final IdleAwareSchedule schedule;
     private final MultiGauge available;
     private final MultiGauge held;
     private final MultiGauge confirmed;
     private final MultiGauge total;
     private final MultiGauge drift;
 
-    public SeatGauges(JdbcClient jdbc, MeterRegistry registry) {
+    public SeatGauges(JdbcClient jdbc, MeterRegistry registry, IdleAwareSchedule schedule) {
         this.jdbc = jdbc;
+        this.schedule = schedule;
         this.available = MultiGauge.builder("seats.available").description("Seats available, per show").register(registry);
         this.held = MultiGauge.builder("seats.held").description("Seats held, per show").register(registry);
         this.confirmed = MultiGauge.builder("seats.confirmed").description("Seats confirmed, per show").register(registry);
@@ -53,6 +56,9 @@ public class SeatGauges {
 
     @Scheduled(fixedDelayString = "${seatreserve.metrics.seat-gauge-refresh-ms:2000}")
     public void refresh() {
+        if (!schedule.gaugesDue()) {
+            return;   // idle-aware: nothing changed since the last refresh
+        }
         try {
             List<ShowSeats> shows = jdbc.sql("""
                             SELECT s.id::text AS show_id, s.total_seats,
@@ -72,6 +78,7 @@ public class SeatGauges {
             confirmed.register(rows(shows, ShowSeats::confirmed), true);
             total.register(rows(shows, ShowSeats::total), true);
             drift.register(rows(shows, s -> s.total() - (s.available() + s.held() + s.confirmed())), true);
+            schedule.gaugesRefreshed();
         } catch (RuntimeException e) {
             // Keep the last values; readiness reports database trouble separately.
             log.warn("Seat gauge refresh failed: {}", e.getMessage());

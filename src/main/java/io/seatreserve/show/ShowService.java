@@ -1,5 +1,6 @@
 package io.seatreserve.show;
 
+import io.seatreserve.common.idle.IdleAwareSchedule;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -11,10 +12,12 @@ import org.springframework.transaction.annotation.Transactional;
 public class ShowService {
 
     private final ShowRepository shows;
+    private final IdleAwareSchedule schedule;
     private final Map<UUID, Show> cache = new ConcurrentHashMap<>();
 
-    public ShowService(ShowRepository shows) {
+    public ShowService(ShowRepository shows, IdleAwareSchedule schedule) {
         this.shows = shows;
+        this.schedule = schedule;
     }
 
     @Transactional
@@ -22,6 +25,7 @@ public class ShowService {
         Show show = shows.insert(UUID.randomUUID(), request.name().strip(), request.pricePaise(),
                 request.effectivePerUserLimit(), request.seats().size());
         shows.insertSeats(show.id(), request.seats());
+        schedule.seatsChanged();
         List<SeatView> seats = request.seats().stream()
                 .map(label -> new SeatView(label, SeatStatus.AVAILABLE))
                 .toList();

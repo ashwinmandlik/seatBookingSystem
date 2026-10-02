@@ -1,5 +1,6 @@
 package io.seatreserve.reservation;
 
+import io.seatreserve.common.idle.IdleAwareSchedule;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -25,17 +26,27 @@ class HoldSweeper {
     static final int MAX_PER_TICK = 500;
 
     private final HoldExpiry expiry;
+    private final IdleAwareSchedule schedule;
+    private final ReservationRepository reservations;
 
-    HoldSweeper(HoldExpiry expiry) {
+    HoldSweeper(HoldExpiry expiry, IdleAwareSchedule schedule, ReservationRepository reservations) {
         this.expiry = expiry;
+        this.schedule = schedule;
+        this.reservations = reservations;
     }
 
     @Scheduled(fixedDelayString = "${seatreserve.sweeper.interval-ms:1000}")
     void sweep() {
+        if (!schedule.sweepDue()) {
+            return;   // idle-aware: no hold can be due yet, leave the database alone
+        }
         int expired = 0;
         try {
             while (expired < MAX_PER_TICK && expiry.expireOne().isPresent()) {
                 expired++;
+            }
+            if (schedule.enabled()) {
+                schedule.swept(reservations.earliestHoldDeadline().orElse(null));
             }
         } catch (RuntimeException e) {
             // Never let one bad tick kill the schedule; the next tick retries.
