@@ -54,6 +54,7 @@ public class Burst {
     static int perUserLimit = 4;
     static Duration REQUEST_TIMEOUT = Duration.ofSeconds(60);
     static HttpClient http;
+    static final List<String> SERVER_ERRORS = new CopyOnWriteArrayList<>();
 
     enum Scenario {
         HOT_STORM("hot-seat storm (A1)"),
@@ -283,6 +284,11 @@ public class Burst {
                 .sorted((x, y) -> Integer.compare(y.getValue(), x.getValue()))
                 .forEach(e -> line("  %-28s %7d", e.getKey(), e.getValue()));
         if (!outcomes.containsKey("5xx")) line("  %-28s %7d", "5xx", 0);
+        // Which 5xx exactly, and who sent it (our app's error JSON, or the platform's edge page)?
+        Map<Integer, Integer> byStatus = new TreeMap<>();
+        results.stream().filter(r -> r.status() >= 500).forEach(r -> byStatus.merge(r.status(), 1, Integer::sum));
+        byStatus.forEach((status, n) -> line("    5xx status %d: %d", status, n));
+        SERVER_ERRORS.forEach(e -> line("    5xx example: %s", e));
 
         line("");
         line("By scenario");
@@ -495,6 +501,10 @@ public class Burst {
         Map<String, String> headers = r.keyInHeader() ? Map.of("Idempotency-Key", r.key()) : Map.of();
         try {
             Http h = send("POST", "/shows/" + showId + "/reserve", token, json(body), headers);
+            if (h.status >= 500 && SERVER_ERRORS.size() < 3) {
+                String snippet = h.body == null ? "" : h.body.replaceAll("\s+", " ");
+                SERVER_ERRORS.add("HTTP " + h.status + " " + snippet.substring(0, Math.min(200, snippet.length())));
+            }
             String code = h.status >= 400 ? str(h.body, "code") : null;
             return new Res(r, h.status, code, h.status < 300 ? str(h.body, "reservation_id") : null,
                     h.status < 300 ? str(h.body, "user_id") : null, h.status < 300 ? seats(h.body) : List.of(),
