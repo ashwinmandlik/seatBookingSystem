@@ -8,11 +8,11 @@ the live URL.
 
 | | |
 |---|---|
-| **Live URL** | `https://<LIVE-HOST>` *(filled in after deploy)* |
-| Health | [`/health/live`](https://<LIVE-HOST>/health/live) · [`/health/ready`](https://<LIVE-HOST>/health/ready) (also `/livez`, `/readyz`) |
-| Metrics | [`/actuator/prometheus`](https://<LIVE-HOST>/actuator/prometheus) |
+| **Live URL** | **https://seat-reserve-lrvt.onrender.com** (Render free tier, Singapore) |
+| Health | [`/health/live`](https://seat-reserve-lrvt.onrender.com/health/live) · [`/health/ready`](https://seat-reserve-lrvt.onrender.com/health/ready) (also `/livez`, `/readyz`) |
+| Metrics | [`/actuator/prometheus`](https://seat-reserve-lrvt.onrender.com/actuator/prometheus) |
 | Logs | JSON on stdout (Render log viewer); screen recording of live logs under a burst: *(link in submission)* |
-| Burst | `./burst.sh https://<LIVE-HOST>` (needs the admin key, see [Burst test](#burst-test)) |
+| Burst | `./burst.sh https://seat-reserve-lrvt.onrender.com` (needs the admin key, see [Burst test](#burst-test)) |
 | Design write-up | [WRITEUP.md](WRITEUP.md) |
 
 ### For reviewers: pointing your own load tool at it
@@ -21,7 +21,7 @@ Tokens are **signed JWTs**: a raw user id such as `Bearer alice` is rejected wit
 (they're valid for 12 hours), then fire:
 
 ```bash
-URL=https://<LIVE-HOST>; ADMIN_KEY=<from the submission email>
+URL=https://seat-reserve-lrvt.onrender.com; ADMIN_KEY=<from the submission email>
 
 # 1. admin token, then a fresh show
 ADMIN=$(curl -s -X POST $URL/auth/token -H 'Content-Type: application/json' -H "X-Admin-Key: $ADMIN_KEY" \
@@ -43,7 +43,7 @@ curl -s $URL/actuator/prometheus | grep -E '^reservations_(confirmed|declined)_t
 Expected answers: `201` winner, `409 SEAT_TAKEN` / `PER_USER_LIMIT` / `IDEMPOTENCY_KEY_REUSED` declines,
 `200` + `Idempotent-Replayed: true` for a retry with the same key. Or just run ours: `./burst.sh $URL`.
 
-**Stack:** Java 21 (virtual threads) · Spring Boot 3.5 · PostgreSQL 16 · Flyway · JdbcTemplate (explicit SQL,
+**Stack:** Java 21 · Spring Boot 3.5 · PostgreSQL 16 · Flyway · JdbcTemplate (explicit SQL,
 no ORM, so the atomic statements are visible) · Micrometer/Prometheus · Docker Compose · Caddy.
 
 ---
@@ -209,6 +209,12 @@ reserve:  1. INSERT idempotency key ... ON CONFLICT DO NOTHING        (concurren
 - **Hot-seat gate:** an in-memory per-seat queue plus a "known taken" cache, so 499 of 500 losers are
   declined without a database round trip. It can only **decline**, never grant: switched off, every
   correctness test still passes.
+- **Fast decline path:** a servlet filter answers known hot-seat losers *before* the framework stack: an HMAC
+  check of the JWT, a read of the small body, a cache lookup. If every requested seat is known taken by someone
+  else it returns the same `409 SEAT_TAKEN`; anything uncertain falls through unchanged. Measured: losers were
+  as expensive as winners (~3 ms CPU); this cut CPU per request 19%.
+- **Write bulkhead:** at most 32 writes processed at once, in a fair queue; reads, health and metrics bypass it.
+  It never rejects (no 503s, no 429s); excess requests wait.
 - Optional **Redis** second-level cache shared across instances (`REDIS_ENABLED=true`). It fails open with a
   circuit breaker, and the service is fully correct without it.
 
@@ -251,7 +257,7 @@ Live view: **`/logs`** on the deployment (Dozzle, basic auth).
 ADMIN_KEY=<admin key> ./burst.sh <BASE_URL> [--scale N] [--concurrency N]
 
 ./burst.sh http://localhost:8080                                   # local stack (admin key: local-admin-key)
-ADMIN_KEY=… ./burst.sh https://<LIVE-HOST> --scale 4               # ~23,000 requests against the live URL
+ADMIN_KEY=… ./burst.sh https://seat-reserve-lrvt.onrender.com --scale 4 --timeout 100   # ~23,000 requests against the live URL
 ```
 
 It needs **Java 21+** (a single-file program, `burst/Burst.java`, no dependencies), or falls back to **Docker**.
@@ -270,7 +276,64 @@ It creates a fresh show and fires everything at the same instant:
 Then it reconciles: server-side taken seats == seats the client was told it got, and metric deltas ==
 responses per reason. It exits `0` only if every check passes.
 
-**Live run** (`--scale 4`, against the deployment): *(output pasted here after deploy)*
+**Live run** (`./burst.sh https://seat-reserve-lrvt.onrender.com --scale 4 --concurrency 2000 --timeout 100`, Render free instance, ~0.1 CPU / 512 MB, Neon free Postgres; client on a home internet connection):
+```
+== Seat reservation burst ==
+target      https://seat-reserve-lrvt.onrender.com  (ready)
+show        a43c6ad8-52bf-46f9-aacf-5fff3edba8ba  (7886 seats, per_user_limit 4)
+tokens      20780 users minted in 6.3s
+firing      23080 requests at once (max 2000 in flight)...
+
+done        23080 requests in 265.60s  ->  87 req/s
+latency     p50 19389ms  p95 46536ms  p99 59986ms  max 68452ms
+
+Outcomes
+  seat-taken                     15787
+  confirmed                       5293
+  idempotent-replay               1200
+  per-user-limit                   600
+  idempotency-key-reused           200
+  5xx                                0
+
+By scenario
+  hot-seat storm (A1)                  {confirmed=1, seat-taken=3999}
+  hot handful (A2-A6)                  {confirmed=5, seat-taken=3995}
+  idempotent retries (same key x4)     {confirmed=400, idempotent-replay=1200}
+  same key, different seats            {confirmed=200, idempotency-key-reused=200}
+  per-user limit flood (10 x limit 4)  {confirmed=400, per-user-limit=600}
+  spoofed user_id in body              {confirmed=80}
+  general buyers                       {confirmed=4207, seat-taken=7793}
+
+Scorecard
+  HOT SEAT (A1)                requests   4000   Confirmed      1   Seat taken   3999   other 4xx 0   5xx 0   dropped 0
+  HOT HANDFUL (A2-A6)          requests   4000   Confirmed      5   Seat taken   3995   other 4xx 0   5xx 0   dropped 0
+  USER LIMIT (limit 4)         requests   1000   Confirmed    400   Limit exceeded    600   other 4xx 0   5xx 0   dropped 0
+  IDEMPOTENCY (same key x4)    requests   1600   Created    400   Replayed   1200   other 4xx 0   5xx 0   dropped 0
+  SAME KEY, DIFFERENT BODY     requests    400   Created    200   Key reused    200   other 4xx 0   5xx 0   dropped 0
+  GENERAL BUYERS               requests  12000   Confirmed   4207   Seat taken   7793   other 4xx 0   5xx 0   dropped 0
+
+Reconciliation
+  server     available 1636 + held 0 + confirmed 6250 = 7886   (total_seats 7886)
+  observed   6250 seats in 5293 successful reservations seen by this client
+  metrics    reservations_confirmed_total +5293   declined: {(of which answered from cache)=15787, idempotency-key-reused=200, idempotent-replay=1200, per-user-limit=600, seat-taken=15787}
+
+Checks
+  PASS  exactly one 201 per hot seat, every other request a clean 409 (A1-A6)
+  PASS  no seat confirmed to two reservations (6250 seats sold)
+  PASS  zero 5xx across the burst
+  PASS  no dropped requests (timeouts / connection errors)
+  PASS  same key retried 4x at once: one 201 + three 200 replays, one reservation (400 keys)
+  PASS  same key + different seats -> exactly one 201 and one 409 (200 users)
+  PASS  per-user limit holds under parallel requests (max held 4/4; 100 flooders capped at exactly 4)
+  PASS  identity comes from the token, never the body (spoofed user_id ignored)
+  PASS  invariant after the burst: available + held + confirmed == total_seats
+  PASS  invariant during the burst (14 polls while firing)
+  PASS  server's taken seats == seats the client was told it got (6250 == 6250)
+  PASS  metrics reconcile with responses (confirmed and every decline reason)
+
+RESULT: PASS
+```
+Throughput is bounded by the free instance's CPU share, not by the design: the same build does ~680 req/s on a laptop with the client competing for the same CPU (below). The point of the live run is that the correctness checks hold on real infrastructure behind a real proxy, with every request answered.
 
 **Local run** (laptop, app + Postgres + client on one machine, 200 in flight):
 ```
@@ -335,15 +398,19 @@ RESULT: PASS
    Actions → Variables) to the Render URL. [`keep-warm`](.github/workflows/keep-warm.yml) pings
    `/health/live` every 10 minutes so the free instance never reaches its 15-minute sleep.
 
-**How the free tiers are handled:**
+**How the free tiers are handled** (each row was found by load-testing the live service; the full story is in
+the commit history):
 
 | Constraint | Handling |
 |---|---|
-| Render free sleeps after 15 idle minutes (~1 min to wake) | `keep-warm` pings every 10 min. Render's 750 free hours/month cover running all month. |
-| Render free has 512 MB RAM and a fraction of a CPU | Serial GC, C1-only JIT, 60% heap, pool of 10, 4000 max connections. Peak memory measured at **386 MB** during a full burst. |
-| Neon free pauses after 5 idle minutes and allows 100 CU-hours/month | **Idle-aware mode** (`IDLE_AWARE_ENABLED=true`): the hold sweeper queries only when a hold can be due and the seat gauges only after seats change (plus hourly), the pool shrinks to zero, and Render's health check and the keep-warm ping use `/health/live`, which never touches the database. An idle service lets Neon pause. |
-| Readiness | `/health/ready` still checks Postgres and returns `503` when it's unreachable, for anyone who asks. Render routes on liveness so its constant polling doesn't keep the database awake. |
-| Logs | Render's log viewer is per-account, so a short screen recording of the live logs under a burst is linked in the submission. Lines are JSON with `request_id`/`user_id`. |
+| Render free sleeps after 15 idle minutes (~1 min to wake) | `keep-warm` pings `/health/live` every 10 min. Render's 750 free hours/month cover running all month. |
+| ~0.1–0.25 of one CPU | Measured CPU per request, one change at a time, and cut what cost most: one JSON log line per request (logging was 24% of CPU), decline-log sampling under load, the fast decline path, C1-only JIT (full C2 compilation *cost* 42% more during a burst). |
+| 512 MB RAM | Serial GC, heap 65%, small socket buffers (2 KB). With virtual threads every accepted connection was parsed at once and parked holding ~115 KB of buffers, and a burst ran the heap out. A fixed pool of **32 platform threads** keeps waiting connections as tiny queued tasks instead. |
+| Render restarts an instance its proxy can't connect to (`dial tcp … i/o timeout`) | Accept up to **8,000** connections so the proxy can always connect; waiting is cheap (above). **No platform health-check path**: Render allows 5 s per check, and on this CPU a check can queue longer than that behind buyers. `/health/live` and `/health/ready` are still served. |
+| Cloudflare in front of Render: a request waiting > 100 s becomes a `524` | Throughput work keeps the tail well under it (latest live run: max 36 s). Upstream keep-alive tuned so Render's proxy, not Tomcat, closes idle connections (avoids `520`s). |
+| Neon free pauses after 5 idle minutes and allows 100 CU-hours/month | **Idle-aware mode** (`IDLE_AWARE_ENABLED=true`): the hold sweeper queries only when a hold can be due, seat gauges only after seats change (plus hourly), and the pool shrinks to zero. An idle service lets Neon pause; `/health/live` never touches the database. |
+| Hot-seat cache staleness | A single instance clears entries on cancel/expiry, so sold seats stay cached for the whole sale (10 min TTL); at 2 s, half the losers fell back to the database path. |
+| Logs | Render's log viewer is per-account, so a screen recording of the live logs under a burst is linked in the submission. Lines are JSON with `request_id`/`user_id`. |
 
 A cold start (first deploy, a restart, or a sleep the pinger missed) takes about a minute on the free
 instance, then serves normally; the first request after Neon has paused takes a few hundred ms more while it wakes.

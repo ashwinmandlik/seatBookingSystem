@@ -116,7 +116,17 @@ broken promise) is far worse than briefly refusing sales.
 | **Not ready** | `/health/ready` failing everywhere | database unreachable, no sales possible |
 | **Pool saturation** | `hikaricp_connections_pending` high for minutes | precursor of 503s at on-sale |
 | **Latency** | reserve p99 (`reservation_latency_seconds`) > 2 s | buyers timing out |
-| Ticket, not page | `db_transaction_retries_total` rising, `shared_cache_breaker_open == 1`, spike in `holds_expired_total` | degraded but correct |
+| **Restarts** | `process_uptime_seconds` resets, or platform events like `dial tcp … i/o timeout` | every live failure I hit while load-testing showed up here first |
+| Ticket, not page | `db_transaction_retries_total` rising, `shared_cache_breaker_open == 1`, spike in `holds_expired_total`, `bulkhead_queue_waiting` high | degraded but correct |
+
+**What load-testing the live service taught me.** Every failure I hit was operational, not a correctness bug:
+the invariant held and no seat was ever sold twice, even when the instance restarted mid-burst. I found each
+failure from the signals above: `process_uptime_seconds` exposed restarts the client couldn't see, a heap
+histogram showed ~115 KB per waiting connection (out of memory at ~2,000 queued), the decline `source` label
+showed half the "seat taken" answers bypassing the cache, and Render's event log showed its proxy couldn't
+connect (`dial tcp … i/o timeout`). The fixes are in the commit history: a write bulkhead, platform threads with
+small buffers so waiting is cheap, a fast decline path, sampled decline logs, and keep-alive tuning. Together they
+took the free instance from 44 to 99 requests per second, with no restarts.
 
 Business counters (`reservations_confirmed_total`, `reservations_declined_total{reason,source}`) increment
 **only after commit**, never inside the retried transaction, so they reconcile exactly with API responses.
@@ -146,16 +156,25 @@ ChatGPT for an independent spec and used it as a checklist against what we'd bui
   with a keep-warm cron and idle-aware background jobs so Neon's free compute hours last the month.
 - From the ChatGPT spec: adopt `/health/live|ready`, request ids in errors and more metrics; reject what
   contradicted the brief (holds by default, unsigned `Bearer <user-id>` tokens).
+- Stay on the free tier after the first live restarts and make it faster rather than pay. I asked what a
+  world-class engineer would do; the answer was to measure first (CPU per request, one change at a time),
+  then cut work and add isolation. I rejected adding Redis for speed after the measurements showed the bottleneck
+  was app CPU, not data access.
+- A bulk token endpoint, plus a README section so reviewers' own load tools can get tokens easily.
 
 **What the AI proposed and I reviewed:** the lock order and both deadlock fixes, the conditional quota upsert,
 the deferred FK that lets the key be the first lock, the sweeper design, the hot-seat gate, the metrics
-design, and the embedded-Postgres test approach (so tests need no Docker).
+design, the embedded-Postgres test approach (so tests need no Docker), and the performance work: the
+experiments, the fast decline path, log sampling, the bulkhead, and switching from virtual to platform threads.
+That last one reversed an earlier AI recommendation once Render's own event log disproved its premise.
 
 **How I kept it honest:** every concurrency property has a test against real Postgres, and I had the AI
 **break the code on purpose** to prove the tests catch it (18 double-sells without the lock, 216 deadlocks
 with the order reversed, correctness unchanged with the gate disabled). The AI also caught and corrected
 its own mistakes along the way (a 30 s Redis TTL that was unsafe, a burst script that crashed during
-setup). All of these are in the commit history.
+setup, a burst client whose HTTP/2 use caused 98% "drops", a gauge exported under the wrong name, a profile
+sampled after the burst had ended). Every claim about the live service comes from running the burst against
+it. All of this is in the commit history.
 
 ## 7. What I'd do next
 
