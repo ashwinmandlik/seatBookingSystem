@@ -73,7 +73,10 @@ class ObservabilityTest extends IntegrationTest {
                 org.hamcrest.Matchers.matchesPattern("[0-9a-f-]{36}")));
         mvc.perform(get("/livez").header("X-Request-Id", "client-abc.123"))
                 .andExpect(header().string("X-Request-Id", "client-abc.123"));
+        // A header with a line break is rejected by Spring Security's firewall: a clean 400, never a 500.
         mvc.perform(get("/livez").header("X-Request-Id", "evil\r\ninjected: header"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("MALFORMED_REQUEST"))
                 .andExpect(header().string("X-Request-Id", org.hamcrest.Matchers.matchesPattern("[0-9a-f-]{36}")));
     }
 
@@ -106,6 +109,14 @@ class ObservabilityTest extends IntegrationTest {
         mvc.perform(reserve(show, "dave", "{\"seats\":[\"A1\"]}")).andExpect(status().isConflict());
         seatGauges.refresh();
 
+        // Scrape several times back to back: the gauges must be present in every scrape, even while
+        // the background refresh runs (they used to vanish between a remove and a re-add).
+        for (int i = 0; i < 20; i++) {
+            assertThat(mvc.perform(get("/actuator/prometheus")).andReturn().getResponse().getContentAsString())
+                    .as("scrape %d", i).contains("seats_available{application=\"seat-reserve\",show_id=\"" + show + "\"}");
+            seatGauges.refresh();
+        }
+
         String scrape = mvc.perform(get("/actuator/prometheus")).andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
         assertThat(scrape)
@@ -115,6 +126,8 @@ class ObservabilityTest extends IntegrationTest {
                 .contains("seats_available{application=\"seat-reserve\",show_id=\"" + show + "\"} 2.0")
                 .contains("seats_confirmed{application=\"seat-reserve\",show_id=\"" + show + "\"} 1.0")
                 .contains("seats_reconciliation_drift{application=\"seat-reserve\",show_id=\"" + show + "\"} 0.0")
+                .contains("seats_capacity{application=\"seat-reserve\",show_id=\"" + show + "\"} 3.0")
+                .contains("seats_held{application=\"seat-reserve\",show_id=\"" + show + "\"} 0.0")
                 .contains("hikaricp_connections_pending")
                 .contains("http_server_requests_seconds_bucket");
 

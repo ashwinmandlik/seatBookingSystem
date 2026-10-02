@@ -226,7 +226,7 @@ mistaken for a dead database) and returns **503, failing closed**, when it's unr
 |---|---|
 | `reservations_confirmed_total` | reservations that became confirmed |
 | `reservations_declined_total{reason,source}` | `reason`: `seat-taken`, `per-user-limit`, `idempotent-replay`, `idempotency-key-reused`, … ; `source`: `cache`\|`database` |
-| `seats_available` / `seats_held` / `seats_confirmed` / `seats_total` `{show_id}` | gauges computed from the seats table |
+| `seats_available` / `seats_held` / `seats_confirmed` / `seats_capacity` `{show_id}` | gauges computed from the seats table |
 | `seats_reconciliation_drift{show_id}` | `total − (available + held + confirmed)`, which **must be 0** |
 | `reservation_requests_total{outcome}`, `reservation_latency_seconds{outcome}` | request rate and latency histogram |
 | `reservations_held_total`, `reservations_cancelled_total`, `holds_expired_total` | lifecycle |

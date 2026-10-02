@@ -5,7 +5,13 @@ import io.seatreserve.common.idle.IdleAwareSchedule;
 import io.micrometer.core.instrument.MultiGauge;
 import io.micrometer.core.instrument.MultiGauge.Row;
 import io.micrometer.core.instrument.Tags;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Function;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -17,7 +23,7 @@ import org.springframework.stereotype.Component;
  * so they always agree with GET /shows/{id}:
  *
  * <pre>
- *   seats_available{show_id}   seats_held{show_id}   seats_confirmed{show_id}   seats_total{show_id}
+ *   seats_available{show_id}   seats_held{show_id}   seats_confirmed{show_id}   seats_capacity{show_id}
  *   seats_reconciliation_drift{show_id}   total_seats - (available + held + confirmed); must stay 0
  * </pre>
  *
@@ -48,14 +54,38 @@ public class SeatGauges {
         this.available = MultiGauge.builder("seats.available").description("Seats available, per show").register(registry);
         this.held = MultiGauge.builder("seats.held").description("Seats held, per show").register(registry);
         this.confirmed = MultiGauge.builder("seats.confirmed").description("Seats confirmed, per show").register(registry);
-        this.total = MultiGauge.builder("seats.total").description("Seats in the show").register(registry);
+        // Not "seats.total": Prometheus reserves the _total suffix for counters, so a gauge with
+        // that name is silently exported as plain "seats".
+        this.total = MultiGauge.builder("seats.capacity").description("Seats in the show").register(registry);
         this.drift = MultiGauge.builder("seats.reconciliation.drift")
                 .description("total_seats - (available + held + confirmed); anything but 0 is a bug")
                 .register(registry);
     }
 
+    /**
+     * Live values per show. Each show's gauges are registered once, read these
+     * holders, and are only updated in place afterwards.
+     */
+    private static final class Counts {
+        final AtomicLong available = new AtomicLong();
+        final AtomicLong held = new AtomicLong();
+        final AtomicLong confirmed = new AtomicLong();
+        final AtomicLong capacity = new AtomicLong();
+        final AtomicLong drift = new AtomicLong();
+    }
+
+    private final Map<String, Counts> counts = new ConcurrentHashMap<>();
+
+    /**
+     * Updates the per-show values in place. Registering with overwrite=true on
+     * every refresh (the earlier approach) makes MultiGauge remove and re-add
+     * each gauge, so a scrape landing in between saw no seat gauges at all.
+     * Rows are now registered once (overwrite=false) and read live holders;
+     * shows that leave the window are still removed. Synchronized so two
+     * refreshes never interleave.
+     */
     @Scheduled(fixedDelayString = "${seatreserve.metrics.seat-gauge-refresh-ms:2000}")
-    public void refresh() {
+    public synchronized void refresh() {
         if (!schedule.gaugesDue()) {
             return;   // idle-aware: nothing changed since the last refresh
         }
@@ -73,11 +103,22 @@ public class SeatGauges {
                     .query((rs, i) -> new ShowSeats(rs.getString("show_id"), rs.getLong("total_seats"),
                             rs.getLong("available"), rs.getLong("held"), rs.getLong("confirmed")))
                     .list();
-            available.register(rows(shows, ShowSeats::available), true);
-            held.register(rows(shows, ShowSeats::held), true);
-            confirmed.register(rows(shows, ShowSeats::confirmed), true);
-            total.register(rows(shows, ShowSeats::total), true);
-            drift.register(rows(shows, s -> s.total() - (s.available() + s.held() + s.confirmed())), true);
+            Set<String> current = new HashSet<>();
+            for (ShowSeats s : shows) {
+                current.add(s.showId());
+                Counts c = counts.computeIfAbsent(s.showId(), id -> new Counts());
+                c.available.set(s.available());
+                c.held.set(s.held());
+                c.confirmed.set(s.confirmed());
+                c.capacity.set(s.total());
+                c.drift.set(s.total() - (s.available() + s.held() + s.confirmed()));
+            }
+            counts.keySet().retainAll(current);
+            available.register(rows(c -> c.available), false);
+            held.register(rows(c -> c.held), false);
+            confirmed.register(rows(c -> c.confirmed), false);
+            total.register(rows(c -> c.capacity), false);
+            drift.register(rows(c -> c.drift), false);
             schedule.gaugesRefreshed();
         } catch (RuntimeException e) {
             // Keep the last values; readiness reports database trouble separately.
@@ -85,13 +126,9 @@ public class SeatGauges {
         }
     }
 
-    private interface Value {
-        long of(ShowSeats seats);
-    }
-
-    private static List<Row<?>> rows(List<ShowSeats> shows, Value value) {
-        return shows.stream()
-                .<Row<?>>map(s -> Row.of(Tags.of("show_id", s.showId()), value.of(s)))
+    private List<Row<?>> rows(Function<Counts, AtomicLong> field) {
+        return counts.entrySet().stream()
+                .<Row<?>>map(e -> Row.of(Tags.of("show_id", e.getKey()), field.apply(e.getValue()), AtomicLong::doubleValue))
                 .toList();
     }
 }
