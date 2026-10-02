@@ -83,7 +83,7 @@ Starts the app, Postgres 16 and (optional) Redis. The admin key is `local-admin-
 ./gradlew test
 ```
 
-The 84 tests run against **real PostgreSQL 16 and Redis binaries** started in-process. No Docker is needed, so
+The 97 tests run against **real PostgreSQL 16 and Redis binaries** started in-process. No Docker is needed, so
 they run the same on Linux, macOS (Intel or Apple Silicon) and Windows. They include genuinely concurrent races:
 1000 users on one seat, 1000 identical retries, per-user-limit floods, cancel vs reserve, confirm vs
 expiry, multiple sweepers, and a mixed 100-thread stress test that would surface any deadlock.
