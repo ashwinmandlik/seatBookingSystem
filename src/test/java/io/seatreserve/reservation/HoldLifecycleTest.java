@@ -250,11 +250,19 @@ class HoldLifecycleTest extends IntegrationTest {
      */
     @Test
     void mixedTrafficNeverDeadlocksAndKeepsEveryInvariant() throws Exception {
-        UUID show = createShow(10, 4);
+        // Buyers fight over A1-A10. A11-A30 start as 20 already-expired holds, so
+        // expiry always runs concurrently with everything else; leaving it to
+        // chance made the coverage assertion below flaky.
+        UUID show = createShow(30, 4);
         List<String> labels = IntStream.rangeClosed(1, 10).mapToObj(i -> "A" + i).toList();
         List<Reservation> known = new CopyOnWriteArrayList<>();
         List<Throwable> unexpected = new CopyOnWriteArrayList<>();
         Set<String> outcomes = ConcurrentHashMap.newKeySet();
+        for (int i = 11; i <= 30; i++) {
+            Reservation expiredHold = hold(show, "seed-" + i, "A" + i);
+            moveDeadline(expiredHold.id(), -1_000);
+            known.add(expiredHold);
+        }
 
         runConcurrently(100, worker -> {
             ThreadLocalRandom rnd = ThreadLocalRandom.current();
