@@ -10,10 +10,13 @@ services:
     region: singapore
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    # Liveness, not readiness: Render polls this constantly, and a database
-    # check here would keep Neon awake 24/7 (and burn its free compute hours).
-    # /health/ready still checks Postgres and fails closed for anyone who asks.
-    healthCheckPath: /health/live
+    # No platform health check on purpose. Render gives each check 5 s, stops
+    # routing after 15 s of failures and restarts after 60 s. On ~0.1 CPU, an
+    # on-sale burst queues connections in the kernel (see SERVER_MAX_CONNECTIONS),
+    # so a check can wait longer than 5 s behind buyers, and Render would
+    # take a busy-but-healthy instance out of service mid-sale. Without a
+    # check, Render restarts only if the process exits. /health/live and
+    # /health/ready (which checks Postgres and fails closed) are still served.
     autoDeployTrigger: commit
     envVars:
       - key: DATABASE_URL
@@ -34,9 +37,17 @@ services:
         value: "60000"
 
       # Free instance: 512 MB RAM and a fraction of a CPU.
+      # Heap 65%: non-heap measured at ~100 MB (metaspace, code cache, stacks).
       - key: JAVA_TOOL_OPTIONS
-        value: "-XX:MaxRAMPercentage=60 -XX:MaxMetaspaceSize=128m -XX:ReservedCodeCacheSize=48m -Xss512k -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -XX:+ExitOnOutOfMemoryError"
+        value: "-XX:MaxRAMPercentage=65 -XX:MaxMetaspaceSize=128m -XX:ReservedCodeCacheSize=48m -Xss512k -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -XX:+ExitOnOutOfMemoryError"
+      # Every accepted connection costs ~115 KB of heap (Tomcat buffers,
+      # measured by heap histogram); 2,000 queued requests filled the heap and
+      # the JVM exited. Accept at most 1,000 (~115 MB) and let the rest wait in
+      # the kernel's accept queue, which costs almost nothing and is FIFO.
       - key: SERVER_MAX_CONNECTIONS
-        value: "4000"
-      - key: SERVER_ACCEPT_COUNT
         value: "1000"
+      - key: SERVER_ACCEPT_COUNT
+        value: "4000"
+      # Requests carry a ~300-byte JWT; 4 KB of headers is plenty and halves a buffer.
+      - key: SERVER_MAXHTTPREQUESTHEADERSIZE
+        value: "4KB"
