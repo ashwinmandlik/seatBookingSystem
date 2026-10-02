@@ -112,7 +112,9 @@ public class Burst {
                 // HTTP/2 client multiplexes everything over one connection and fails with "too many
                 // concurrent streams" once the edge proxy's per-connection limit (~100) is reached.
                 .version(HttpClient.Version.HTTP_1_1)
-                .connectTimeout(Duration.ofSeconds(10))
+                // Opening thousands of TLS connections at once can take a while on the client side;
+                // a request that never connects is counted as dropped, so give the connect real room.
+                .connectTimeout(Duration.ofSeconds(30))
                 .executor(Executors.newVirtualThreadPerTaskExecutor())
                 .build();
 
