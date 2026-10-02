@@ -2,10 +2,12 @@ package io.seatreserve.common.error;
 
 import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import io.seatreserve.observability.RequestCorrelationFilter;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessException;
 import org.springframework.dao.TransientDataAccessException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -35,6 +37,12 @@ public class GlobalExceptionHandler {
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
     private static final PropertyNamingStrategies.NamingBase SNAKE_CASE =
             (PropertyNamingStrategies.NamingBase) PropertyNamingStrategies.SNAKE_CASE;
+
+    private final MeterRegistry registry;
+
+    public GlobalExceptionHandler(MeterRegistry registry) {
+        this.registry = registry;
+    }
 
     @ExceptionHandler(DomainException.class)
     ResponseEntity<ApiError> domain(DomainException e) {
@@ -86,6 +94,7 @@ public class GlobalExceptionHandler {
     @ExceptionHandler({CannotGetJdbcConnectionException.class, TransientDataAccessException.class})
     ResponseEntity<ApiError> unavailable(Exception e) {
         log.warn("Database unavailable: {}", e.getMessage());
+        countDatabaseError(e);
         recordOutcome(ErrorCode.SERVICE_UNAVAILABLE);
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .header(HttpHeaders.RETRY_AFTER, "1")
@@ -95,7 +104,15 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(Exception.class)
     ResponseEntity<ApiError> unexpected(Exception e) {
         log.error("Unhandled exception", e);
+        if (e instanceof DataAccessException) {
+            countDatabaseError(e);
+        }
         return respond(HttpStatus.INTERNAL_SERVER_ERROR, ApiError.of(ErrorCode.INTERNAL_ERROR, "Internal error"));
+    }
+
+    /** database_errors_total{exception}: database failures that reached a client. */
+    private void countDatabaseError(Exception e) {
+        registry.counter("database.errors", "exception", e.getClass().getSimpleName()).increment();
     }
 
     private static ResponseEntity<ApiError> badRequest(ErrorCode code, String message, Map<String, Object> details) {

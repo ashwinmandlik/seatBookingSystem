@@ -2,10 +2,12 @@ package io.seatreserve.observability;
 
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import io.seatreserve.common.error.DomainException;
 import io.seatreserve.common.error.ErrorCode;
 import io.seatreserve.reservation.ReservationDeclines.SeatsUnavailable;
 import java.util.Locale;
+import java.util.concurrent.TimeUnit;
 import org.springframework.stereotype.Component;
 
 /**
@@ -78,6 +80,35 @@ public class ReservationMetrics {
                 .tag("source", source)
                 .register(registry)   // idempotent: returns the existing counter for these tags
                 .increment();
+    }
+
+    /**
+     * One reserve request finished: counts it and records its latency, tagged
+     * by outcome (confirmed, held, idempotent-replay, seat-taken, ..., error).
+     *
+     * <pre>
+     *   reservation_requests_total{outcome}
+     *   reservation_latency_seconds_bucket{outcome,le}   (histogram: p50/p95/p99)
+     * </pre>
+     */
+    public void request(String outcome, long nanos) {
+        Counter.builder("reservation.requests").description("Reserve requests handled, by outcome")
+                .tag("outcome", outcome).register(registry).increment();
+        Timer.builder("reservation.latency").description("Reserve request latency, by outcome")
+                .tag("outcome", outcome)
+                .publishPercentileHistogram()
+                .register(registry)
+                .record(nanos, TimeUnit.NANOSECONDS);
+    }
+
+    /** A reserve request failed unexpectedly (would surface as a 5xx): reservation_failures_total. */
+    public void failure(Throwable cause) {
+        Counter.builder("reservation.failures").description("Reserve requests that failed unexpectedly")
+                .tag("exception", cause.getClass().getSimpleName()).register(registry).increment();
+    }
+
+    public static String outcome(DomainException e) {
+        return reason(e.code());
     }
 
     /** SEAT_TAKEN -> seat-taken, PER_USER_LIMIT -> per-user-limit, matching the brief's wording. */

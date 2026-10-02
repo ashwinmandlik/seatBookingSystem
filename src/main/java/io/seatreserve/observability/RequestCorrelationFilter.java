@@ -69,6 +69,7 @@ public class RequestCorrelationFilter extends OncePerRequestFilter {
     /** Health checks and metric scrapes every few seconds would drown the useful lines. */
     private static boolean isProbe(HttpServletRequest request) {
         String path = request.getRequestURI();
-        return path.startsWith("/actuator") || path.equals("/livez") || path.equals("/readyz");
+        return path.startsWith("/actuator") || path.startsWith("/health/")
+                || path.equals("/livez") || path.equals("/readyz");
     }
 }

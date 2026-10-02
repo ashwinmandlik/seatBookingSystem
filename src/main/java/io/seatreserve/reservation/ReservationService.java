@@ -83,9 +83,12 @@ public class ReservationService {
     }
 
     public ReserveResult reserve(ReserveCommand cmd) {
+        long started = System.nanoTime();
         try {
             ReserveResult result = reserveGuarded(cmd);
             Reservation r = result.reservation();
+            metrics.request(result.replayed() ? ReservationMetrics.REPLAY : r.status().json(),
+                    System.nanoTime() - started);
             if (result.replayed()) {
                 metrics.replayed();
             } else {
@@ -101,8 +104,13 @@ public class ReservationService {
             }
             return result;
         } catch (DomainException declined) {
+            metrics.request(ReservationMetrics.outcome(declined), System.nanoTime() - started);
             metrics.declined(declined);
             throw declined;
+        } catch (RuntimeException unexpected) {
+            metrics.request("error", System.nanoTime() - started);
+            metrics.failure(unexpected);
+            throw unexpected;
         }
     }
 
