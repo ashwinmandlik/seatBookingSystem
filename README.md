@@ -14,7 +14,7 @@ the live URL.
 | Health | [`/health/live`](https://seat-reserve-lrvt.onrender.com/health/live) · [`/health/ready`](https://seat-reserve-lrvt.onrender.com/health/ready) (also `/livez`, `/readyz`) |
 | Metrics | [`/actuator/prometheus`](https://seat-reserve-lrvt.onrender.com/actuator/prometheus) |
 | Logs | JSON on stdout (Render log viewer); screen recording of live logs under a burst: *(link in submission)* |
-| Burst | `ADMIN_KEY='<admin key>' ./burst.sh https://seat-reserve-lrvt.onrender.com` (see [Run the burst from your laptop](#run-the-burst-from-your-laptop)) |
+| Burst | `ADMIN_KEY="<admin key>" ./burst.sh https://seat-reserve-lrvt.onrender.com` (see [Run the burst from your laptop](#run-the-burst-from-your-laptop)) |
 | Run it locally | `./gradlew dev` (`.\gradlew dev` on Windows): one command, needs only a JDK. Or `docker compose up --build`. In an IDE, run `LocalDev`. See [Run it](#run-it) |
 | Design write-up | [WRITEUP.md](WRITEUP.md) |
 | Clean-clone CI | [`ci`](.github/workflows/ci.yml) on every push, from a fresh checkout: `./gradlew build` and `./gradlew dev` + the Postman suite on Linux, macOS (Apple Silicon) and Windows; `docker compose up --build`, then the Postman suite, `./burst.sh --wait-for-expiry` with 15 s holds (all 18 checks) and readiness failing closed with Postgres stopped |
@@ -27,13 +27,17 @@ Clone the repo, then from its folder:
 ```bash
 # macOS / Linux (or Git Bash on Windows)
 git clone https://github.com/ashwinmandlik/seatBookingSystem.git && cd seatBookingSystem
-ADMIN_KEY='<admin key>' ./burst.sh https://seat-reserve-lrvt.onrender.com
+ADMIN_KEY="<admin key>" ./burst.sh https://seat-reserve-lrvt.onrender.com
 ```
 ```powershell
-# Windows PowerShell
-git clone https://github.com/ashwinmandlik/seatBookingSystem.git; cd seatBookingSystem
-java burst/Burst.java https://seat-reserve-lrvt.onrender.com --admin-key '<admin key>'
+# Windows PowerShell or cmd
+git clone https://github.com/ashwinmandlik/seatBookingSystem.git
+cd seatBookingSystem
+java burst/Burst.java https://seat-reserve-lrvt.onrender.com --admin-key "<admin key>"
 ```
+
+Put the key in **double quotes**, as above: that works in bash, zsh, PowerShell and cmd alike. (Single quotes
+don't quote anything in cmd.)
 
 - This fires about **5,900 requests**, including a 1,000-user storm on one seat, and takes **1–2 minutes** on the
   free instance. Add `--scale 4` for about 23,500 requests (4–5 minutes).
@@ -313,29 +317,29 @@ The burst is one self-contained Java file, [`burst/Burst.java`](burst/Burst.java
 **Ways to run it**
 
 Each command is on one line. Copy the block for your terminal: bash commands don't work in PowerShell, and the
-reverse.
+reverse. The admin key goes in double quotes in every shell.
 
 1. **bash**: macOS, Linux, or Git Bash / WSL on Windows. From the repo folder:
    ```bash
    # bash
-   ADMIN_KEY='<admin key>' ./burst.sh https://seat-reserve-lrvt.onrender.com --scale 4
+   ADMIN_KEY="<admin key>" ./burst.sh https://seat-reserve-lrvt.onrender.com --scale 4
    ./burst.sh http://localhost:8080          # against a local stack (admin key: local-admin-key)
    ```
 
 2. **Any terminal with Java 21+**: PowerShell, cmd, bash, zsh. From the repo folder:
    ```powershell
    # PowerShell, bash, zsh, cmd
-   java burst/Burst.java https://seat-reserve-lrvt.onrender.com --scale 4 --admin-key '<admin key>'
+   java burst/Burst.java https://seat-reserve-lrvt.onrender.com --scale 4 --admin-key "<admin key>"
    ```
 
 3. **From any folder:** give the file's full path, replacing `<repo>` with wherever you cloned it.
    ```bash
    # bash
-   java <repo>/burst/Burst.java https://seat-reserve-lrvt.onrender.com --admin-key '<admin key>'
+   java <repo>/burst/Burst.java https://seat-reserve-lrvt.onrender.com --admin-key "<admin key>"
    ```
    ```powershell
    # PowerShell (it doesn't expand ~ for java; use $HOME, e.g. $HOME\projects\seatBookingSystem)
-   java <repo>\burst\Burst.java https://seat-reserve-lrvt.onrender.com --admin-key '<admin key>'
+   java <repo>\burst\Burst.java https://seat-reserve-lrvt.onrender.com --admin-key "<admin key>"
    ```
    If Java answers `ClassNotFoundException: …Burst.java`, it didn't find the file at that path (Java then treats
    the argument as a class name). Check the path, or `cd` into the repo and use `burst/Burst.java`.
@@ -344,29 +348,29 @@ reverse.
    ```bash
    # bash
    curl -fsSLO https://raw.githubusercontent.com/ashwinmandlik/seatBookingSystem/main/burst/Burst.java
-   java Burst.java https://seat-reserve-lrvt.onrender.com --scale 4 --admin-key '<admin key>'
+   java Burst.java https://seat-reserve-lrvt.onrender.com --scale 4 --admin-key "<admin key>"
    ```
    ```powershell
    # PowerShell
    Invoke-WebRequest https://raw.githubusercontent.com/ashwinmandlik/seatBookingSystem/main/burst/Burst.java -OutFile Burst.java
-   java Burst.java https://seat-reserve-lrvt.onrender.com --scale 4 --admin-key '<admin key>'
+   java Burst.java https://seat-reserve-lrvt.onrender.com --scale 4 --admin-key "<admin key>"
    ```
 
 5. **Docker only, no Java installed:** `./burst.sh` switches to Docker by itself (Git Bash included). To call
    Docker directly, from the repo folder:
    ```bash
    # bash (macOS, Linux)
-   docker run --rm -v "$PWD/burst:/burst:ro" eclipse-temurin:21-jdk java /burst/Burst.java https://seat-reserve-lrvt.onrender.com --admin-key '<admin key>'
+   docker run --rm -v "$PWD/burst:/burst:ro" eclipse-temurin:21-jdk java /burst/Burst.java https://seat-reserve-lrvt.onrender.com --admin-key "<admin key>"
    ```
    ```powershell
    # PowerShell
-   docker run --rm -v "${PWD}\burst:/burst:ro" eclipse-temurin:21-jdk java /burst/Burst.java https://seat-reserve-lrvt.onrender.com --admin-key '<admin key>'
+   docker run --rm -v "${PWD}\burst:/burst:ro" eclipse-temurin:21-jdk java /burst/Burst.java https://seat-reserve-lrvt.onrender.com --admin-key "<admin key>"
    ```
    For a service running on your own machine, add `--network host` on Linux. On Docker Desktop, use `./burst.sh`
    (next paragraph).
 
-**Setting the admin key as a variable** instead of `--admin-key`: `export ADMIN_KEY='…'` (bash, zsh),
-`$env:ADMIN_KEY='…'` (PowerShell), `set ADMIN_KEY=…` (cmd). Note that `ADMIN_KEY=… command` on one line works
+**Setting the admin key as a variable** instead of `--admin-key`: `export ADMIN_KEY="…"` (bash, zsh),
+`$env:ADMIN_KEY="…"` (PowerShell), `set ADMIN_KEY=…` (cmd). Note that `ADMIN_KEY=… command` on one line works
 only in bash and zsh, not in PowerShell.
 
 **On Docker Desktop (Windows, macOS)** with a `localhost` target, it fires from inside the stack's Docker network
