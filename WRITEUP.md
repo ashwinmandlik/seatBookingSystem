@@ -138,43 +138,46 @@ so a saturated pool isn't mistaken for a dead database.
 
 ## 6. AI usage: directed vs decided
 
-I used Claude Code (Anthropic) as a pair programmer for the whole build, working interactively: it
-proposed designs and explained trade-offs, I asked questions and made the calls, and it implemented and
-tested each step after I approved it. It wrote nearly all of the code, tests, scripts and docs. I also asked
-ChatGPT for an independent spec and used it as a checklist against what we'd built.
+I built the base myself: the Spring Boot project, the PostgreSQL schema with Flyway, and the core design. Postgres
+is the single source of truth, the SQL is written by hand (JdbcTemplate, no ORM) so the atomic statements stay
+visible, multi-seat requests are all-or-nothing, and a reserve confirms immediately, with cancel and optional holds
+on top. From there I used Claude Code (Anthropic) as a pair programmer to make it better. It proposed designs and
+explained the trade-offs, I questioned them and made the calls, and it implemented and tested each step once I had
+approved it. Most of the code was typed by the AI; the direction and the decisions were mine. I also asked ChatGPT
+for an independent spec and used it as a checklist against what we had built.
 
-**What I decided** (often after pushing back or asking for the comparison):
-- Keep the existing Spring Boot/Java skeleton, PostgreSQL, explicit SQL (JdbcTemplate) over JPA.
-- Lifecycle: immediate confirm plus cancel **and** optional TTL holds; all-or-nothing partial requests.
-- Hold TTL as global config rather than per show, after asking "what does the brief say?".
-- Postgres, not Redis, as the idempotency authority, after a comparison I asked for, including the
-  multi-VM failure cases.
-- The burst-hardening layers (fewer round trips, transient retry, hot-seat gate, generous timeouts) and
-  explicitly *not* load-shedding with 429, because the brief says losers get 409.
-- An optional, fail-open Redis L2 for the hot-seat cache. I pushed for Redis; the AI argued for adding it
-  as a second level rather than replacing the in-memory layer.
-- $0 hosting: first an Oracle Always Free VM (never sleeps); when Oracle had no free capacity, Render + Neon,
-  with a keep-warm cron and idle-aware background jobs so Neon's free compute hours last the month.
-- From the ChatGPT spec: adopt `/health/live|ready`, request ids in errors and more metrics; reject what
-  contradicted the brief (holds by default, unsigned `Bearer <user-id>` tokens).
-- Stay on the free tier after the first live restarts and make it faster rather than pay. The approach was to
-  measure first (CPU per request, one change at a time), then cut work and add isolation. I rejected adding Redis for speed after the measurements showed the bottleneck
-  was app CPU, not data access.
-- A bulk token endpoint, plus a README section so reviewers' own load tools can get tokens easily.
+**Where AI made it better**
+- **Correctness under concurrency.** The global lock order, the conditional quota upsert, the deferred foreign key
+  that lets the idempotency key be the first lock taken, and the expiry sweeper (one hold per transaction,
+  `SKIP LOCKED`) came out of these sessions. I asked for each to be justified, and had the AI break the code on
+  purpose to show the tests would notice: 18 double-sells without the row lock, 216 deadlocks with the lock order
+  reversed.
+- **Latency on a tiny free instance.** When the free Render instance (about 0.1 of a CPU) started restarting under
+  load, I chose to keep it free and make it faster rather than pay. We measured first, CPU per request and one
+  change at a time, then cut work: one log line per request, a fast decline path for hot-seat losers, a write
+  bulkhead, platform threads with small buffers, and a longer-lived hot-seat cache. The instance went from 44 to
+  87–99 requests per second with no restarts. One earlier recommendation, virtual threads, turned out wrong once
+  Render's event log disproved its premise, and we reversed it.
+- **Better options than my first idea.** I wanted Redis; the AI argued for adding it as an optional second-level
+  cache instead of replacing the in-memory layer, and for keeping idempotency keys in Postgres, because Redis can't
+  take part in the Postgres transaction. I asked for the multi-instance failure cases before agreeing to both.
 
-**What the AI proposed and I reviewed:** the lock order and both deadlock fixes, the conditional quota upsert,
-the deferred FK that lets the key be the first lock, the sweeper design, the hot-seat gate, the metrics
-design, the embedded-Postgres test approach (so tests need no Docker), and the performance work: the
-experiments, the fast decline path, log sampling, the bulkhead, and switching from virtual to platform threads.
-That last one reversed an earlier AI recommendation once Render's own event log disproved its premise.
+**What I decided**
+- Spring Boot and Java, PostgreSQL, explicit SQL over JPA.
+- The reservation lifecycle above, and the hold TTL as one global setting rather than per show, after checking
+  what the brief asks for.
+- Never shed load with `429`: the brief says losing buyers get `409`, so requests wait instead.
+- $0 hosting: an Oracle Always Free VM first; Render and Neon when Oracle had no free capacity, with a keep-warm
+  monitor and idle-aware background jobs so Neon's free compute hours last the month.
+- From the ChatGPT spec: adopt `/health/live` and `/health/ready`, request ids in errors and more metrics; reject
+  what contradicted the brief (holds by default, unsigned `Bearer <user-id>` tokens).
+- Making it easy to review: a bulk token endpoint, instructions for reviewers' own load tools, and one-command
+  ways to run the service and the burst.
 
-**How I checked the work:** every concurrency property has a test against real Postgres, and I had the AI
-break the code on purpose to confirm the tests catch it (18 double-sells without the lock, 216 deadlocks
-with the order reversed, correctness unchanged with the gate disabled). The AI also caught and corrected
-its own mistakes along the way (a 30 s Redis TTL that was unsafe, a burst script that crashed during
-setup, a burst client whose HTTP/2 use caused 98% "drops", a gauge exported under the wrong name, a profile
-sampled after the burst had ended). Every claim about the live service comes from running the burst against
-it. All of this is in the commit history.
+**How I checked the work:** every concurrency property has a test against real Postgres, and every claim about the
+live service comes from running the burst against it. Mistakes were caught along the way, including the AI's own:
+an unsafe 30-second Redis TTL, a burst client whose HTTP/2 use made 98% of requests look dropped, a gauge exported
+under the wrong name, and a timing-sensitive test that failed on Windows CI. All of it is in the commit history.
 
 ## 7. What I'd do next
 
