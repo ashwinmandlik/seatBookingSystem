@@ -76,7 +76,12 @@ curl -s $URL/actuator/prometheus | grep -E '^reservations_(confirmed|declined)_t
 Expected answers: `201` winner, `409 SEAT_TAKEN` / `PER_USER_LIMIT` / `IDEMPOTENCY_KEY_REUSED` declines,
 `200` + `Idempotent-Replayed: true` for a retry with the same key. Or run the included burst test: `./burst.sh $URL`.
 
-**Postman:** import [`postman/SeatReserve.postman_collection.json`](postman/SeatReserve.postman_collection.json). One collection works against both targets: set the `target` variable to `live` (paste the admin key into `liveAdminKey`) or `local` (`localhost:8080`, works as is). A collection script picks the URL and admin key and clears saved tokens when you switch. Run it with the Collection Runner: 25 requests in order (tokens, a fresh show, then every rule: seat taken, idempotent replay, key reuse, per-user limit, token identity, hold → confirm, cancel) with 42 tests on the responses.
+**Postman:** two collections, the same 25 requests with 42 tests in each, run in order with the Collection Runner (tokens, a fresh show, then every rule: seat taken, idempotent replay, key reuse, per-user limit, token identity, hold → confirm, cancel):
+
+| Collection | Target | Setup |
+|---|---|---|
+| [`SeatReserve-live`](postman/SeatReserve-live.postman_collection.json) | the live URL | open the collection → Variables, set `adminKey` to the key from the submission email |
+| [`SeatReserve-local`](postman/SeatReserve-local.postman_collection.json) | `http://localhost:8080` | none: start the app (`./gradlew dev` or `docker compose up --build`); the key `local-admin-key` is filled in |
 
 **Stack:** Java 21 · Spring Boot 3.5 · PostgreSQL 16 · Flyway · JdbcTemplate (explicit SQL,
 no ORM, so the atomic statements are visible) · Micrometer/Prometheus · Docker Compose · Caddy.

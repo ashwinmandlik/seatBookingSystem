@@ -67,7 +67,7 @@ jobs:
           echo "::error::app did not become ready"; cat dev.log; exit 1
       - name: API walkthrough (Postman collection, 42 assertions)
         shell: bash
-        run: npx --yes newman run postman/SeatReserve.postman_collection.json --env-var target=local
+        run: npx --yes newman run postman/SeatReserve-local.postman_collection.json
       - name: App log
         if: always()
         shell: bash
@@ -92,7 +92,7 @@ jobs:
           done
           exit 1
       - name: API walkthrough (Postman collection, 42 assertions)
-        run: npx --yes newman run postman/SeatReserve.postman_collection.json --env-var target=local
+        run: npx --yes newman run postman/SeatReserve-local.postman_collection.json
       # Java 21 for the single-file burst client (burst.sh falls back to Docker without it).
       - uses: actions/setup-java@v5
         with:

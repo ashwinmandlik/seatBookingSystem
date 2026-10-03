@@ -1,42 +1,18 @@
 {
   "info": {
-    "name": "Seat Reserve API",
-    "description": "Seat reservation service (Paytm Money take-home).\n\n**One collection, two targets.** Set the collection variable `target` to `live` (the Render deployment) or `local` (`http://localhost:8080`, after `./gradlew dev` or `docker compose up`). A collection-level script picks the matching URL and admin key before every request, and clears saved tokens and ids when the target changes.\n\n**Setup:** for `live`, paste the admin key from the submission email into `liveAdminKey`. `local` works out of the box (`local-admin-key`, the docker-compose default).\n\n**Run:** Collection Runner, in order. Folder 1 saves the tokens, folder 2 creates a fresh show, folders 3 and 4 walk through every rule (seat taken, idempotent replay, key reuse, per-user limit, token identity, hold -> confirm, cancel) with a test on each response.\n\nFor the 20k-request concurrency burst use `./burst.sh <BASE_URL>` from the repo; Postman runs requests one at a time.",
-    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+    "name": "Seat Reserve API (live)",
+    "description": "Seat reservation service (Paytm Money take-home), against the live deployment at `https://seat-reserve-lrvt.onrender.com`.\n\n**One step before running:** open the collection > Variables and set `adminKey` to the admin key from the submission email (it replaces the placeholder). Admin requests stop with a message until then.\n\n**Run:** Collection Runner, in order. Folder 1 saves the tokens, folder 2 creates a fresh show, folders 3 and 4 walk through every rule (seat taken, idempotent replay, key reuse, per-user limit, token identity, hold -> confirm, cancel) with a test on each response.\n\nFor the concurrency burst use `./burst.sh <BASE_URL>` (or `java burst/Burst.java <BASE_URL>`) from the repo.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_postman_id": "12e825ee-41b2-4b8c-ab64-97995dca9f43"
   },
   "variable": [
     {
-      "key": "target",
-      "value": "live",
-      "description": "live or local: picks the URL and admin key below."
-    },
-    {
-      "key": "liveUrl",
+      "key": "baseUrl",
       "value": "https://seat-reserve-lrvt.onrender.com"
     },
     {
-      "key": "liveAdminKey",
-      "value": "",
-      "description": "From the submission email (never committed)."
-    },
-    {
-      "key": "localUrl",
-      "value": "http://localhost:8080"
-    },
-    {
-      "key": "localAdminKey",
-      "value": "local-admin-key",
-      "description": "The docker-compose / dev default."
-    },
-    {
-      "key": "baseUrl",
-      "value": "{{liveUrl}}",
-      "description": "Set automatically from target before every request."
-    },
-    {
       "key": "adminKey",
-      "value": "{{liveAdminKey}}",
-      "description": "Set automatically from target before every request."
+      "value": "PASTE-THE-ADMIN-KEY-FROM-THE-SUBMISSION-EMAIL"
     },
     {
       "key": "adminToken",
@@ -65,10 +41,6 @@
     {
       "key": "bobHoldId",
       "value": ""
-    },
-    {
-      "key": "lastTarget",
-      "value": ""
     }
   ],
   "event": [
@@ -77,19 +49,11 @@
       "script": {
         "type": "text/javascript",
         "exec": [
-          "// Switch environments by changing the `target` variable: live | local.",
-          "const target = String(pm.variables.get('target') || 'live').trim().toLowerCase();",
-          "if (!['live', 'local'].includes(target)) {",
-          "    throw new Error(`target must be 'live' or 'local', got '${target}'`);",
-          "}",
-          "pm.variables.set('baseUrl', pm.variables.get(`${target}Url`));",
-          "pm.variables.set('adminKey', pm.variables.get(`${target}AdminKey`));",
-          "// Tokens and ids from the other target are useless here (different signing secret, different",
-          "// database): forget them when the target changes, so folder 1 and 2 start clean.",
-          "if (pm.collectionVariables.get('lastTarget') !== target) {",
-          "    ['adminToken', 'aliceToken', 'bobToken', 'showId', 'aliceKey', 'aliceReservationId', 'bobHoldId']",
-          "        .forEach(v => pm.collectionVariables.set(v, ''));",
-          "    pm.collectionVariables.set('lastTarget', target);",
+          "// Stop with a clear message if an admin request is sent before the key is filled in.",
+          "const key = String(pm.variables.get('adminKey') || '');",
+          "if (pm.request.headers.has('X-Admin-Key') && (key === '' || key.startsWith('PASTE-'))) {",
+          "    throw new Error('Set the collection variable adminKey to the admin key from the submission email '",
+          "        + '(collection > Variables), then run again.');",
           "}"
         ]
       }
@@ -215,7 +179,7 @@
                 "token"
               ]
             },
-            "description": "Admin token: needs the X-Admin-Key header (liveAdminKey or localAdminKey, picked by target). Its scope includes `admin`, which POST /shows requires.",
+            "description": "Admin token: needs the X-Admin-Key header, taken from the collection variable adminKey.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"user_id\": \"admin\"\n}",
