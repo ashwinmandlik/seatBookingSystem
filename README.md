@@ -434,22 +434,26 @@ invariant check. (A line every 5 s when the output isn't a terminal.)
 
 It exits `0` only if every check passes: 16, or 18 with `--wait-for-expiry`.
 
-**Live run** (`./burst.sh https://seat-reserve-lrvt.onrender.com --scale 4 --concurrency 2000 --timeout 100`, Render free instance, ~0.1 CPU / 512 MB, Neon free Postgres; client on a home internet connection):
+**Live run** (`java burst/Burst.java https://seat-reserve-lrvt.onrender.com --admin-key "…"` with the defaults: about
+23,500 requests, up to 2,000 at a time. Render free instance, ~0.1 CPU / 512 MB, Neon free Postgres; client on a home
+internet connection):
 ```
 == Seat reservation burst ==
 target      https://seat-reserve-lrvt.onrender.com  (ready)
-show        a43c6ad8-52bf-46f9-aacf-5fff3edba8ba  (7886 seats, per_user_limit 4)
-tokens      20780 users minted in 6.3s
-firing      23080 requests at once (up to 2000 concurrently)...
+show        838ff96b-f210-40fb-92b6-989e6bec2124  (8286 seats, per_user_limit 4)
+tokens      21180 users minted in 4.8s
+firing      23480 requests at once (up to 2000 concurrently)...
+  live       available 1,703 + held 400 + confirmed 6,183 = 8,286 ok   responses 23,478/23,480
 
-done        23080 requests in 265.60s  ->  87 req/s
-latency     p50 19389ms  p95 46536ms  p99 59986ms  max 68452ms
+done        23480 requests in 287.55s  ->  82 req/s
+latency     p50 21007ms  p95 46707ms  p99 58317ms  max 63252ms
 
 Outcomes
-  seat-taken                     15787
-  confirmed                       5293
+  seat-taken                     15788
+  confirmed                       5292
   idempotent-replay               1200
   per-user-limit                   600
+  held                             400
   idempotency-key-reused           200
   5xx                                0
 
@@ -460,7 +464,8 @@ By scenario
   same key, different seats            {confirmed=200, idempotency-key-reused=200}
   per-user limit flood (10 x limit 4)  {confirmed=400, per-user-limit=600}
   spoofed user_id in body              {confirmed=80}
-  general buyers                       {confirmed=4207, seat-taken=7793}
+  holds ("hold": true)                 {held=400}
+  general buyers                       {confirmed=4206, seat-taken=7794}
 
 Scorecard
   HOT SEAT (A1)                requests   4000   Confirmed      1   Seat taken   3999   other 4xx 0   5xx 0   dropped 0
@@ -468,16 +473,24 @@ Scorecard
   USER LIMIT (limit 4)         requests   1000   Confirmed    400   Limit exceeded    600   other 4xx 0   5xx 0   dropped 0
   IDEMPOTENCY (same key x4)    requests   1600   Created    400   Replayed   1200   other 4xx 0   5xx 0   dropped 0
   SAME KEY, DIFFERENT BODY     requests    400   Created    200   Key reused    200   other 4xx 0   5xx 0   dropped 0
-  GENERAL BUYERS               requests  12000   Confirmed   4207   Seat taken   7793   other 4xx 0   5xx 0   dropped 0
+  HOLDS ("hold": true)         requests    400   Held    400   Seat taken      0   other 4xx 0   5xx 0   dropped 0
+  GENERAL BUYERS               requests  12000   Confirmed   4206   Seat taken   7794   other 4xx 0   5xx 0   dropped 0
 
 Reconciliation
-  server     available 1636 + held 0 + confirmed 6250 = 7886   (total_seats 7886)
-  observed   6250 seats in 5293 successful reservations seen by this client
-  metrics    reservations_confirmed_total +5293   declined: {(of which answered from cache)=15787, idempotency-key-reused=200, idempotent-replay=1200, per-user-limit=600, seat-taken=15787}
+  server     available 1692 + held 400 + confirmed 6194 = 8286   (total_seats 8286)
+  observed   6594 seats in 5692 successful reservations seen by this client
+  metrics    reservations_confirmed_total +5292   reservations_held_total +400   declined: {(of which answered from cache)=15788, idempotency-key-reused=200, idempotent-replay=1200, per-user-limit=600, seat-taken=15788}
+
+Hold lifecycle
+  placed     400 holds during the burst (server hold TTL 300s); show said held 400
+  live       available 1,805 + held 162 + confirmed 6,319 = 8,286 ok   confirm/cancel 250/266
+  confirm    133 of 133 -> 200 confirmed      cancel 133 of 133 -> 200 cancelled   (fired at once)
+  show       held -266   confirmed +133   available +133   -> held 134
+  expiry     134 holds left to expire on their own ~300s after the burst (--wait-for-expiry watches it)
 
 Checks
   PASS  exactly one 201 per hot seat, every other request a clean 409 (A1-A6)
-  PASS  no seat confirmed to two reservations (6250 seats sold)
+  PASS  no seat confirmed to two reservations (6594 seats sold)
   PASS  zero 5xx across the burst
   PASS  no dropped requests (timeouts / connection errors)
   PASS  same key retried 4x at once: one 201 + three 200 replays, one reservation (400 keys)
@@ -485,54 +498,83 @@ Checks
   PASS  per-user limit holds under parallel requests (max held 4/4; 100 flooders capped at exactly 4)
   PASS  identity comes from the token, never the body (spoofed user_id ignored)
   PASS  invariant after the burst: available + held + confirmed == total_seats
-  PASS  invariant during the burst (14 polls while firing)
-  PASS  server's taken seats == seats the client was told it got (6250 == 6250)
-  PASS  metrics reconcile with responses (confirmed and every decline reason)
+  PASS  invariant during the burst (12 polls while firing)
+  PASS  server's taken seats == seats the client was told it got (6594 == 6594)
+  PASS  metrics reconcile with responses (confirmed, held and every decline reason)
+  PASS  "hold": true -> 201 held with a deadline (400/400)
+  PASS  confirm -> 200 confirmed, cancel -> 200 cancelled (133 + 133 at once)
+  PASS  show follows: held -266, confirmed +133, available +133; invariant on every poll (2)
+  PASS  hold metrics reconcile (confirmed +133, cancelled +133, expired +0)
 
 RESULT: PASS
 ```
-Throughput is bounded by the free instance's CPU share, not by the design: the same build does ~680 req/s on a laptop with the client competing for the same CPU (below). The live run shows the correctness checks holding on real infrastructure, behind a real proxy, with every request answered.
+Throughput here is bounded by the free instance's CPU share, not by the design: the same build answers about
+1,180 requests per second on a laptop that runs the app, the database and the client together (below). The live run
+shows the correctness checks holding on real infrastructure, behind a real proxy, with every request answered.
 
-**Local run** (laptop, app + Postgres + client on one machine, 200 concurrent requests):
+**Local run** (`docker compose up --build`, then `./burst.sh http://localhost:8080` with the defaults; laptop, Docker
+Desktop on Windows):
 ```
-done        5770 requests in 8.53s  ->  676 req/s
-latency     p50 227ms  p95 677ms  p99 912ms  max 1516ms
+done        23480 requests in 19.88s  ->  1181 req/s
+latency     p50 1681ms  p95 3578ms  p99 4290ms  max 4964ms
 
 Outcomes
-  seat-taken                      3937
-  confirmed                       1333
-  idempotent-replay                300
-  per-user-limit                   150
-  idempotency-key-reused            50
+  seat-taken                     15795
+  confirmed                       5285
+  idempotent-replay               1200
+  per-user-limit                   600
+  held                             400
+  idempotency-key-reused           200
   5xx                                0
 
+By scenario
+  hot-seat storm (A1)                  {confirmed=1, seat-taken=3999}
+  hot handful (A2-A6)                  {confirmed=5, seat-taken=3995}
+  idempotent retries (same key x4)     {confirmed=400, idempotent-replay=1200}
+  same key, different seats            {confirmed=200, idempotency-key-reused=200}
+  per-user limit flood (10 x limit 4)  {confirmed=400, per-user-limit=600}
+  spoofed user_id in body              {confirmed=80}
+  holds ("hold": true)                 {held=400}
+  general buyers                       {confirmed=4199, seat-taken=7801}
+
 Scorecard
-  HOT SEAT (A1)                requests   1000   Confirmed      1   Seat taken    999   other 4xx 0   5xx 0   dropped 0
-  HOT HANDFUL (A2-A6)          requests   1000   Confirmed      5   Seat taken    995   other 4xx 0   5xx 0   dropped 0
-  USER LIMIT (limit 4)         requests    250   Confirmed    100   Limit exceeded    150   other 4xx 0   5xx 0   dropped 0
-  IDEMPOTENCY (same key x4)    requests    400   Created    100   Replayed    300   other 4xx 0   5xx 0   dropped 0
-  SAME KEY, DIFFERENT BODY     requests    100   Created     50   Key reused     50   other 4xx 0   5xx 0   dropped 0
-  GENERAL BUYERS               requests   3000   Confirmed   1057   Seat taken   1943   other 4xx 0   5xx 0   dropped 0
+  HOT SEAT (A1)                requests   4000   Confirmed      1   Seat taken   3999   other 4xx 0   5xx 0   dropped 0
+  HOT HANDFUL (A2-A6)          requests   4000   Confirmed      5   Seat taken   3995   other 4xx 0   5xx 0   dropped 0
+  USER LIMIT (limit 4)         requests   1000   Confirmed    400   Limit exceeded    600   other 4xx 0   5xx 0   dropped 0
+  IDEMPOTENCY (same key x4)    requests   1600   Created    400   Replayed   1200   other 4xx 0   5xx 0   dropped 0
+  SAME KEY, DIFFERENT BODY     requests    400   Created    200   Key reused    200   other 4xx 0   5xx 0   dropped 0
+  HOLDS ("hold": true)         requests    400   Held    400   Seat taken      0   other 4xx 0   5xx 0   dropped 0
+  GENERAL BUYERS               requests  12000   Confirmed   4199   Seat taken   7801   other 4xx 0   5xx 0   dropped 0
 
 Reconciliation
-  server     available 408 + held 0 + confirmed 1568 = 1976   (total_seats 1976)
-  observed   1568 seats in 1333 successful reservations seen by this client
-  metrics    reservations_confirmed_total +1333   declined: {(of which answered from cache)=3202,
-             idempotency-key-reused=50, idempotent-replay=300, per-user-limit=150, seat-taken=3937}
+  server     available 1652 + held 400 + confirmed 6234 = 8286   (total_seats 8286)
+  observed   6634 seats in 5685 successful reservations seen by this client
+  metrics    reservations_confirmed_total +5285   reservations_held_total +400   declined: {(of which answered from cache)=12487, idempotency-key-reused=200, idempotent-replay=1200, per-user-limit=600, seat-taken=15795}
+
+Hold lifecycle
+  placed     400 holds during the burst (server hold TTL 300s); show said held 400
+  live       available 1,652 + held 400 + confirmed 6,234 = 8,286 ok   confirm/cancel 0/266
+  confirm    133 of 133 -> 200 confirmed      cancel 133 of 133 -> 200 cancelled   (fired at once)
+  show       held -266   confirmed +133   available +133   -> held 134
+  expiry     134 holds left to expire on their own ~300s after the burst (--wait-for-expiry watches it)
 
 Checks
   PASS  exactly one 201 per hot seat, every other request a clean 409 (A1-A6)
-  PASS  no seat confirmed to two reservations (1568 seats sold)
+  PASS  no seat confirmed to two reservations (6634 seats sold)
   PASS  zero 5xx across the burst
   PASS  no dropped requests (timeouts / connection errors)
-  PASS  same key retried 4x at once: one 201 + three 200 replays, one reservation (100 keys)
-  PASS  same key + different seats -> exactly one 201 and one 409 (50 users)
-  PASS  per-user limit holds under parallel requests (max held 4/4; 25 flooders capped at exactly 4)
+  PASS  same key retried 4x at once: one 201 + three 200 replays, one reservation (400 keys)
+  PASS  same key + different seats -> exactly one 201 and one 409 (200 users)
+  PASS  per-user limit holds under parallel requests (max held 4/4; 100 flooders capped at exactly 4)
   PASS  identity comes from the token, never the body (spoofed user_id ignored)
   PASS  invariant after the burst: available + held + confirmed == total_seats
-  PASS  invariant during the burst (12 polls while firing)
-  PASS  server's taken seats == seats the client was told it got (1568 == 1568)
-  PASS  metrics reconcile with responses (confirmed and every decline reason)
+  PASS  invariant during the burst (50 polls while firing)
+  PASS  server's taken seats == seats the client was told it got (6634 == 6634)
+  PASS  metrics reconcile with responses (confirmed, held and every decline reason)
+  PASS  "hold": true -> 201 held with a deadline (400/400)
+  PASS  confirm -> 200 confirmed, cancel -> 200 cancelled (133 + 133 at once)
+  PASS  show follows: held -266, confirmed +133, available +133; invariant on every poll (2)
+  PASS  hold metrics reconcile (confirmed +133, cancelled +133, expired +0)
 
 RESULT: PASS
 ```
