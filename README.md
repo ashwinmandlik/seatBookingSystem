@@ -306,7 +306,7 @@ The burst is one self-contained Java file, [`burst/Burst.java`](burst/Burst.java
 | `<BASE_URL>` (first argument) | required | e.g. `https://seat-reserve-lrvt.onrender.com` or `http://localhost:8080` |
 | `--admin-key KEY` | `ADMIN_KEY` env var, else `local-admin-key` | needed to create the show and tokens; the live key is in the submission email |
 | `--scale N` | `1` | multiplies every scenario: 1 ≈ 5,900 requests, 4 ≈ 23,500 |
-| `--concurrency N` | `2000` | maximum requests open at the same time |
+| `--concurrency N` | `2000` (`200` on Windows against localhost) | maximum requests open at the same time; Windows refuses connections beyond ~200 waiting at once |
 | `--timeout SECONDS` | `100` | per request; Cloudflare in front of Render also gives up after ~100 s |
 | `--wait-for-expiry` | off | also wait for unconfirmed holds to expire (about 5 min on the live service) |
 

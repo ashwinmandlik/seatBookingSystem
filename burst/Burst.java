@@ -54,6 +54,13 @@ public class Burst {
     static String adminKey = env("ADMIN_KEY", "local-admin-key");
     static int scale = 1;
     static int concurrency = 2000;
+    static boolean concurrencySet = false;
+    /**
+     * Windows queues only ~200 not-yet-accepted connections per listening socket and refuses the rest, so
+     * a burst from Windows at a server on the same machine would count refused connects as drops even
+     * though the service answered everything that reached it (measured: 200 passes, 500 drops ~80).
+     */
+    static final int WINDOWS_LOCAL_CONCURRENCY = 200;
     static int perUserLimit = 4;
     // Matches the ~100 s after which Cloudflare (in front of Render) gives up on a request anyway; a
     // shorter client timeout would count slow but successful answers from a small instance as dropped.
@@ -136,6 +143,11 @@ public class Burst {
             fail("Service not ready: GET /readyz -> " + ready.status + " " + ready.body);
         }
         line("target      %s  (ready)", base);
+        if (!concurrencySet && isLocalTarget() && System.getProperty("os.name", "").startsWith("Windows")) {
+            concurrency = WINDOWS_LOCAL_CONCURRENCY;
+            line("note        Windows refuses connections beyond ~200 waiting at once, so this local run uses"
+                    + " --concurrency %d (pass --concurrency to override)", concurrency);
+        }
 
         // Plan the burst ---------------------------------------------------
         List<Req> plan = new ArrayList<>();
@@ -950,7 +962,10 @@ public class Burst {
         for (int i = 1; i < args.length; i++) {
             switch (args[i]) {
                 case "--scale" -> scale = Integer.parseInt(args[++i]);
-                case "--concurrency" -> concurrency = Integer.parseInt(args[++i]);
+                case "--concurrency" -> {
+                    concurrency = Integer.parseInt(args[++i]);
+                    concurrencySet = true;
+                }
                 case "--admin-key" -> adminKey = args[++i];
                 case "--timeout" -> REQUEST_TIMEOUT = Duration.ofSeconds(Long.parseLong(args[++i]));
                 case "--wait-for-expiry" -> waitForExpiry = true;
@@ -960,6 +975,11 @@ public class Burst {
                 }
             }
         }
+    }
+
+    static boolean isLocalTarget() {
+        String host = URI.create(base).getHost();
+        return host != null && (host.equals("localhost") || host.equals("127.0.0.1") || host.equals("[::1]"));
     }
 
     static String key() {
