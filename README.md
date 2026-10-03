@@ -2,51 +2,109 @@
 
 [![ci](https://github.com/ashwinmandlik/seatBookingSystem/actions/workflows/ci.yml/badge.svg)](https://github.com/ashwinmandlik/seatBookingSystem/actions/workflows/ci.yml)
 
-A JSON API that sells assigned seats for a show and stays correct under an on-sale stampede: a seat is
-never sold twice, a user never exceeds their limit, and a retried request never reserves twice. Every
-decision is made by PostgreSQL (row locks taken in one global order, conditional updates, and
-constraints), with Prometheus metrics, structured logs, and a one-command burst test that checks all of this against
-the live URL.
+A JSON API that sells assigned seats for a show and stays correct under an on-sale stampede: a seat is never sold
+twice, a user never exceeds their limit, and a retried request never reserves twice. Every decision is made by
+PostgreSQL (row locks taken in one global order, conditional updates, constraints), with Prometheus metrics,
+structured logs, and a one-command burst test.
 
-| | |
+## Quick Start
+
+### Option A — Try the live service
+
+**https://seat-reserve-lrvt.onrender.com** (Render free tier, Singapore). Nothing to install.
+
+| Endpoint | |
 |---|---|
-| **Live URL** | **https://seat-reserve-lrvt.onrender.com** (Render free tier, Singapore) |
-| Health | [`/health/live`](https://seat-reserve-lrvt.onrender.com/health/live) · [`/health/ready`](https://seat-reserve-lrvt.onrender.com/health/ready) (also `/livez`, `/readyz`) |
-| Metrics | [`/actuator/prometheus`](https://seat-reserve-lrvt.onrender.com/actuator/prometheus) |
-| Logs | JSON on stdout (Render log viewer); screen recording of live logs under a burst: *(link in submission)* |
-| Burst | `ADMIN_KEY="<admin key>" ./burst.sh https://seat-reserve-lrvt.onrender.com` (see [Run the burst from your laptop](#run-the-burst-from-your-laptop)) |
-| Run it locally | `./gradlew dev` (`.\gradlew dev` on Windows): one command, needs only a JDK. Or `docker compose up --build`. In an IDE, run `LocalDev`. See [Run it](#run-it) |
-| Design write-up | [WRITEUP.md](WRITEUP.md) |
-| Clean-clone CI | [`ci`](.github/workflows/ci.yml) on every push, from a fresh checkout: `./gradlew build` and `./gradlew dev` + the Postman suite on Linux, macOS (Apple Silicon) and Windows; `docker compose up --build`, then the Postman suite, `./burst.sh --wait-for-expiry` with 15 s holds (all 18 checks) and readiness failing closed with Postgres stopped |
-
-### Run the burst from your laptop
-
-You need **Java 21 or newer** (`java -version` to check) **or Docker**, and the admin key from the submission email.
-Clone the repo, then from its folder:
+| [`/health/live`](https://seat-reserve-lrvt.onrender.com/health/live) | the process is up |
+| [`/health/ready`](https://seat-reserve-lrvt.onrender.com/health/ready) | the database is reachable (`503` when it isn't) |
+| [`/actuator/prometheus`](https://seat-reserve-lrvt.onrender.com/actuator/prometheus) | metrics: reservations confirmed, declined by reason, seats available, … |
 
 ```bash
-# macOS / Linux (or Git Bash on Windows)
-git clone https://github.com/ashwinmandlik/seatBookingSystem.git && cd seatBookingSystem
-ADMIN_KEY="<admin key>" ./burst.sh https://seat-reserve-lrvt.onrender.com
+curl https://seat-reserve-lrvt.onrender.com/health/ready
+# {"status":"UP","components":{"database":{"status":"UP",…}},…}
+```
+
+Creating shows and tokens needs the admin key from the submission email; see [API](#api) and
+[pointing your own load tool at it](#for-reviewers-pointing-your-own-load-tool-at-it).
+
+### Option B — Run with Docker
+
+**Only prerequisite: Docker Desktop (Windows, macOS) or Docker Engine (Linux).** No Java or Gradle needed.
+
+```bash
+git clone https://github.com/ashwinmandlik/seatBookingSystem.git
+cd seatBookingSystem
+docker compose up --build
+```
+
+This builds the image and starts the Spring Boot app on <http://localhost:8080> with PostgreSQL 16 (plus an optional
+Redis cache), the same way it is deployed. It's ready when `curl localhost:8080/health/ready` answers `UP`. The local
+admin key is `local-admin-key`. Stop with Ctrl+C, then `docker compose down`.
+
+### Option C — Run with Java
+
+**Needs a JDK, version 17 or newer** (`java -version`). The Gradle wrapper is included, so Gradle doesn't need to be
+installed. If JDK 21 isn't installed, Gradle downloads it for the build (configured in `settings.gradle`; checked on a
+machine with only JDK 17). No database to install either: with no `DATABASE_URL` set, `bootRun` starts a throwaway
+embedded PostgreSQL 16 together with the app.
+
+```bash
+./gradlew bootRun              # macOS, Linux, Git Bash
+```
+```powershell
+.\gradlew.bat bootRun          # Windows PowerShell or cmd
+```
+
+It's ready when it prints `Seat reserve running on http://localhost:8080`; the admin key is `local-admin-key`. Ctrl+C
+stops the app and the database, whose data is discarded. To use your own PostgreSQL instead:
+`DATABASE_URL=postgresql://user:pass@host:5432/db ./gradlew bootRun`. In an IDE, run `io.seatreserve.dev.LocalDev`
+(in `src/test/java`): the same as `bootRun`, in one click.
+
+### Run tests
+
+```bash
+./gradlew test                 # Windows: .\gradlew.bat test
+```
+
+The complete suite: 100 tests against **real PostgreSQL 16 and Redis binaries** started in-process, so no Docker
+and no database install, on Linux, macOS (Intel or Apple Silicon) and Windows. Same JDK requirement as Option C.
+They include real concurrent races: 1,000 users on one seat, 1,000 identical retries, per-user-limit floods, cancel
+vs reserve, confirm vs expiry, multiple sweepers, and a mixed 100-thread stress test that would surface any deadlock.
+
+### Run concurrency burst
+
+The brief's on-sale stampede in one command: about **23,500 requests**, including 4,000 users on one hot seat,
+retries with the same idempotency key, per-user-limit floods, spoofed identities and holds. It checks every rule,
+then prints the outcomes, a reconciliation against the server's state and metrics, and `RESULT: PASS` (exit code `0`).
+
+```bash
+./burst.sh http://localhost:8080                                          # against Option B or C
+ADMIN_KEY="<admin key>" ./burst.sh https://seat-reserve-lrvt.onrender.com  # against the live service
 ```
 ```powershell
 # Windows PowerShell or cmd
-git clone https://github.com/ashwinmandlik/seatBookingSystem.git
-cd seatBookingSystem
+java burst/Burst.java http://localhost:8080
 java burst/Burst.java https://seat-reserve-lrvt.onrender.com --admin-key "<admin key>"
 ```
 
-Put the key in **double quotes**, as above: that works in bash, zsh, PowerShell and cmd alike. (Single quotes
-don't quote anything in cmd.)
+- Needs **Java 21+**, or Docker (`./burst.sh` falls back to it). With only JDK 17, run it through Gradle, which fetches
+  JDK 21: `./gradlew -q burst "--args=<BASE_URL> --admin-key <admin key>"` (`.\gradlew.bat` on Windows).
+- About 30 s locally, 4–5 minutes against the live free instance. Local runs need no key; for the live service put
+  the key in double quotes, which works in every shell.
+- All options and other ways to run it: [Burst test](#burst-test).
 
-- This fires about **5,900 requests**, including a 1,000-user storm on one seat, and takes **1–2 minutes** on the
-  free instance. Add `--scale 4` for about 23,500 requests (4–5 minutes).
-- It ends with the outcome counts, a reconciliation against the server, and a list of checks. Success is
-  `RESULT: PASS`, exit code `0`.
-- Only an older JDK (17+)? Use Gradle, which fetches JDK 21 by itself:
-  `./gradlew -q burst "--args=https://seat-reserve-lrvt.onrender.com --admin-key <admin key>"`
-  (`.\gradlew` on Windows). No Java at all? `./burst.sh` uses Docker automatically. More options in
-  [all the ways to run it](#burst-test), including running it without cloning.
+### More
+
+| | |
+|---|---|
+| Design write-up | [WRITEUP.md](WRITEUP.md): the atomic decision, idempotency, holds, CAP, observability, AI usage |
+| API reference | [API](#api) |
+| Postman | two collections, 25 requests and 42 tests each: [`SeatReserve-live`](postman/SeatReserve-live.postman_collection.json) (set `adminKey` to the key from the submission email) and [`SeatReserve-local`](postman/SeatReserve-local.postman_collection.json) (works as is against Option B or C) |
+| Logs | JSON on stdout (Render's log viewer); a screen recording of the live logs under a burst is linked in the submission |
+| CI | [`ci`](.github/workflows/ci.yml) on every push, from a fresh checkout: `./gradlew build` and `./gradlew bootRun` + the Postman suite on Linux, macOS and Windows; `docker compose up --build`, then the Postman suite, the burst with hold expiry, and readiness failing closed with PostgreSQL stopped |
+
+**Stack:** Java 21 · Spring Boot 3.5 · PostgreSQL 16 · Flyway · JdbcTemplate (explicit SQL, no ORM, so the atomic
+statements are visible) · Micrometer/Prometheus · Docker Compose.
 
 ### For reviewers: pointing your own load tool at it
 
@@ -74,68 +132,12 @@ curl -s $URL/shows/$SHOW | jq .counts
 curl -s $URL/actuator/prometheus | grep -E '^reservations_(confirmed|declined)_total|^seats_available'
 ```
 Expected answers: `201` winner, `409 SEAT_TAKEN` / `PER_USER_LIMIT` / `IDEMPOTENCY_KEY_REUSED` declines,
-`200` + `Idempotent-Replayed: true` for a retry with the same key. Or run the included burst test: `./burst.sh $URL`.
+`200` + `Idempotent-Replayed: true` for a retry with the same key.
 
-**Postman:** two collections, the same 25 requests with 42 tests in each, run in order with the Collection Runner (tokens, a fresh show, then every rule: seat taken, idempotent replay, key reuse, per-user limit, token identity, hold → confirm, cancel):
-
-| Collection | Target | Setup |
-|---|---|---|
-| [`SeatReserve-live`](postman/SeatReserve-live.postman_collection.json) | the live URL | open the collection → Variables, set `adminKey` to the key from the submission email |
-| [`SeatReserve-local`](postman/SeatReserve-local.postman_collection.json) | `http://localhost:8080` | none: start the app (`./gradlew dev` or `docker compose up --build`); the key `local-admin-key` is filled in |
-
-**Stack:** Java 21 · Spring Boot 3.5 · PostgreSQL 16 · Flyway · JdbcTemplate (explicit SQL,
-no ORM, so the atomic statements are visible) · Micrometer/Prometheus · Docker Compose · Caddy.
-
----
-
-## Run it
-
-**Quickest way: one command, needs only a JDK (17 or newer).** Clone the repo, then from its folder:
-
-```bash
-./gradlew dev          # macOS, Linux, Git Bash
-.\gradlew dev          # Windows PowerShell or cmd
-```
-
-This starts the app on <http://localhost:8080> together with a throwaway Postgres 16, with nothing else to
-install: Gradle downloads itself and, if needed, JDK 21. When it prints `Seat reserve running on
-http://localhost:8080`, try `curl localhost:8080/health/ready`. The admin key is `local-admin-key`.
-Ctrl+C stops the app and the database; their data is discarded.
-
-**In an IDE** (IntelliJ, Eclipse, VS Code): open the folder as a Gradle project and run
-`io.seatreserve.dev.LocalDev` (in `src/test/java`). It is the same as `./gradlew dev`: app plus embedded
-Postgres in one click. Running `SeatReserveApplication` itself needs a database already running (below); without
-one it stops with a short message listing the ways to start one.
-
-**With Docker**, exactly as deployed (app, Postgres 16 and Redis in containers, JSON logs):
-
-```bash
-docker compose up --build
-```
-
-**Other options**
-
-| To… | Run | Needs |
-|---|---|---|
-| Use the database separately, e.g. to run `SeatReserveApplication` from an IDE | `./gradlew devDb` (Postgres on localhost:5432), then start the app | a JDK |
-| Use your own Postgres | `DATABASE_URL=postgresql://user:pass@host:5432/db ./gradlew bootRun` | a JDK |
-| Run the tests | `./gradlew test` | a JDK |
-| Call the live URL | curl or any load tool | nothing |
-| Run the burst test | `./gradlew -q burst "--args=<URL>"`, `./burst.sh <URL>`, or `java burst/Burst.java <URL>` | a JDK 17+ for Gradle, Java 21+ for `java`, or Docker ([Burst test](#burst-test)) |
-
-Logs are readable text when run locally and JSON inside the Docker image (`LOG_FORMAT=ecs` shows JSON locally).
-Only port 8080 is published by docker compose, so a Postgres you already run on 5432 doesn't conflict.
-
-### Tests
-
-```bash
-./gradlew test
-```
-
-The 100 tests run against **real PostgreSQL 16 and Redis binaries** started in-process. No Docker is needed, so
-they run the same on Linux, macOS (Intel or Apple Silicon) and Windows. They include real concurrent races:
-1000 users on one seat, 1000 identical retries, per-user-limit floods, cancel vs reserve, confirm vs
-expiry, multiple sweepers, and a mixed 100-thread stress test that would surface any deadlock.
+**Other local options:** `./gradlew devDb` starts only the embedded PostgreSQL on `localhost:5432` (e.g. to run
+`SeatReserveApplication` from an IDE). Logs are readable text when run locally and JSON inside the Docker image
+(`LOG_FORMAT=ecs` shows JSON locally). docker compose publishes only port 8080, so a PostgreSQL you already run on
+5432 doesn't conflict.
 
 ---
 
@@ -293,7 +295,7 @@ mistaken for a dead database) and returns **503, failing closed**, when it's unr
 Counters are incremented only **after commit**, so they reconcile exactly with what the API answered (the burst checks this).
 
 **Logs:** JSON (Elastic Common Schema) on stdout on the live service and anywhere the Docker image runs (it sets
-`LOG_FORMAT=ecs`); plain text when run locally with `./gradlew dev` or from an IDE. Every line carries `request_id` and, once authenticated, `user_id`, and every request
+`LOG_FORMAT=ecs`); plain text when run locally with `./gradlew bootRun` or from an IDE. Every line carries `request_id` and, once authenticated, `user_id`, and every request
 ends with one access line showing its outcome:
 ```json
 {"log":{"level":"INFO","logger":"access"},"message":"POST /shows/…/reserve -> 409","request_id":"…",
@@ -316,7 +318,7 @@ The burst is one self-contained Java file, [`burst/Burst.java`](burst/Burst.java
 |---|---|---|
 | `<BASE_URL>` (first argument) | required | e.g. `https://seat-reserve-lrvt.onrender.com` or `http://localhost:8080` |
 | `--admin-key KEY` | `ADMIN_KEY` env var, else `local-admin-key` | needed to create the show and tokens; the live key is in the submission email |
-| `--scale N` | `1` | multiplies every scenario: 1 ≈ 5,900 requests, 4 ≈ 23,500 |
+| `--scale N` | `4` | multiplies every scenario: 4 ≈ 23,500 requests (the brief's ~20,000), 1 ≈ 5,900 for a quick run |
 | `--concurrency N` | `2000` (`200` on Windows against localhost) | maximum requests open at the same time; Windows refuses connections beyond ~200 waiting at once |
 | `--timeout SECONDS` | `100` | per request; Cloudflare in front of Render also gives up after ~100 s |
 | `--wait-for-expiry` | off | also wait for unconfirmed holds to expire (about 5 min on the live service) |
@@ -329,25 +331,25 @@ reverse. The admin key goes in double quotes in every shell.
 1. **bash**: macOS, Linux, or Git Bash / WSL on Windows. From the repo folder:
    ```bash
    # bash
-   ADMIN_KEY="<admin key>" ./burst.sh https://seat-reserve-lrvt.onrender.com --scale 4
+   ADMIN_KEY="<admin key>" ./burst.sh https://seat-reserve-lrvt.onrender.com
    ./burst.sh http://localhost:8080          # against a local stack (admin key: local-admin-key)
    ```
 
 2. **Any terminal with Java 21+**: PowerShell, cmd, bash, zsh. From the repo folder:
    ```powershell
    # PowerShell, bash, zsh, cmd
-   java burst/Burst.java https://seat-reserve-lrvt.onrender.com --scale 4 --admin-key "<admin key>"
+   java burst/Burst.java https://seat-reserve-lrvt.onrender.com --admin-key "<admin key>"
    ```
 
-   **Only an older JDK (17+)?** Run it through Gradle, which downloads JDK 21 if needed (the same as `./gradlew dev`).
+   **Only an older JDK (17+)?** Run it through Gradle, which downloads JDK 21 if needed (the same as `./gradlew bootRun`).
    Everything after `--args=` is passed to the burst; keep it in one pair of double quotes:
    ```bash
    # bash
-   ./gradlew -q burst "--args=https://seat-reserve-lrvt.onrender.com --scale 4 --admin-key <admin key>"
+   ./gradlew -q burst "--args=https://seat-reserve-lrvt.onrender.com --admin-key <admin key>"
    ```
    ```powershell
    # PowerShell or cmd
-   .\gradlew -q burst "--args=https://seat-reserve-lrvt.onrender.com --scale 4 --admin-key <admin key>"
+   .\gradlew.bat -q burst "--args=https://seat-reserve-lrvt.onrender.com --admin-key <admin key>"
    ```
    Through Gradle the live seat counts print every 5 s instead of updating in place, and a failed run also ends with
    Gradle's "BUILD FAILED".
@@ -368,12 +370,12 @@ reverse. The admin key goes in double quotes in every shell.
    ```bash
    # bash
    curl -fsSLO https://raw.githubusercontent.com/ashwinmandlik/seatBookingSystem/main/burst/Burst.java
-   java Burst.java https://seat-reserve-lrvt.onrender.com --scale 4 --admin-key "<admin key>"
+   java Burst.java https://seat-reserve-lrvt.onrender.com --admin-key "<admin key>"
    ```
    ```powershell
    # PowerShell
    Invoke-WebRequest https://raw.githubusercontent.com/ashwinmandlik/seatBookingSystem/main/burst/Burst.java -OutFile Burst.java
-   java Burst.java https://seat-reserve-lrvt.onrender.com --scale 4 --admin-key "<admin key>"
+   java Burst.java https://seat-reserve-lrvt.onrender.com --admin-key "<admin key>"
    ```
 
 5. **Docker only, no Java installed:** `./burst.sh` switches to Docker by itself (Git Bash included). To call

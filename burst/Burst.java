@@ -52,7 +52,8 @@ public class Burst {
 
     static String base;
     static String adminKey = unquote(env("ADMIN_KEY", "local-admin-key"));
-    static int scale = 1;
+    // 4 = about 23,500 requests, the brief's ~20,000-request burst. --scale 1 for a quick ~5,900.
+    static int scale = 4;
     static int concurrency = 2000;
     static boolean concurrencySet = false;
     /**

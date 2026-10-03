@@ -127,7 +127,7 @@ management:
 logging:
   structured:
     format:
-      # Readable text by default (IDE, ./gradlew dev). The Docker image sets
+      # Readable text by default (IDE, ./gradlew bootRun). The Docker image sets
       # LOG_FORMAT=ecs, so containers and the live deployment log JSON (Elastic
       # Common Schema): every line carries request_id, and user_id once
       # authenticated. LOG_FORMAT=logstash gives the Logstash layout.

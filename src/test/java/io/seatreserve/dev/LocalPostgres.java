@@ -14,8 +14,8 @@ import java.util.stream.Stream;
 
 /**
  * A throwaway Postgres 16 for running the app locally without Docker:
- * {@code ./gradlew devDb}, then {@code ./gradlew bootRun} in another terminal
- * (or {@code ./gradlew dev}, which does both in one process).
+ * {@code ./gradlew devDb}, e.g. to run SeatReserveApplication from an IDE
+ * ({@code ./gradlew bootRun} starts one together with the app).
  * Creates the same database and user as docker-compose. Data is discarded on exit.
  */
 public final class LocalPostgres {

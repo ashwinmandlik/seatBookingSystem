@@ -25,7 +25,7 @@ class DatabaseUnreachableFailureAnalyzerTest {
         assertThat(analysis.getDescription())
                 .contains("jdbc:postgresql://localhost:5432/seatreserve")
                 .contains("Connection to localhost:5432 refused.");
-        assertThat(analysis.getAction()).contains("./gradlew dev").contains("docker compose up");
+        assertThat(analysis.getAction()).contains("./gradlew bootRun").contains("docker compose up");
         assertThat(analysis.getCause()).isSameAs(refused);
     }
 

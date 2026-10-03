@@ -29,10 +29,10 @@ class DatabaseUnreachableFailureAnalyzer implements FailureAnalyzer {
                 "Could not connect to PostgreSQL at " + where + ": " + cannotConnect.getMessage(),
                 """
                 Start a database first. Any one of:
-                  ./gradlew dev                 app + a throwaway embedded Postgres, one command, nothing to install
+                  ./gradlew bootRun             app + a throwaway embedded Postgres, one command, nothing to install
                   docker compose up --build     app, Postgres and Redis in containers
-                  ./gradlew devDb               embedded Postgres only, then ./gradlew bootRun in another terminal
-                  In an IDE: run io.seatreserve.dev.LocalDev (src/test/java), the same as ./gradlew dev
+                  In an IDE: run io.seatreserve.dev.LocalDev (src/test/java), the same as ./gradlew bootRun
+                  ./gradlew devDb               embedded Postgres only on localhost:5432, then start this app again
                   DATABASE_URL=postgresql://user:pass@host:5432/db ./gradlew bootRun   your own Postgres""",
                 cannotConnect);
     }

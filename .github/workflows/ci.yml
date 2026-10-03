@@ -1,6 +1,6 @@
 # What a reviewer does with a clean clone, on machines that aren't the author's:
 # build and test on Linux, macOS (Apple Silicon) and Windows; run the app with
-# ./gradlew dev on each; run `docker compose up --build` exactly as documented
+# ./gradlew bootRun on each; run `docker compose up --build` exactly as documented
 # and fire the burst at it. Every job starts from a fresh checkout.
 name: ci
 
@@ -42,7 +42,7 @@ jobs:
           path: build/reports/tests/test
 
   dev:
-    name: ./gradlew dev (${{ matrix.os }})
+    name: ./gradlew bootRun (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -59,7 +59,7 @@ jobs:
       - name: Start app + embedded Postgres
         shell: bash
         run: |
-          ./gradlew dev > dev.log 2>&1 &
+          ./gradlew bootRun > dev.log 2>&1 &
           for i in $(seq 1 120); do
             if curl -fs http://localhost:8080/health/ready > /dev/null; then echo "ready after ~$((i * 3))s"; exit 0; fi
             sleep 3

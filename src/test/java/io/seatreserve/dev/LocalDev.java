@@ -8,7 +8,7 @@ import org.springframework.context.ConfigurableApplicationContext;
 
 /**
  * One command to run the app locally with nothing installed but a JDK:
- * {@code ./gradlew dev} starts a throwaway Postgres 16 and the app in the same
+ * {@code ./gradlew bootRun} (with no DATABASE_URL set) starts a throwaway Postgres 16 and the app in the same
  * process, and Ctrl+C stops both. Uses port 5432 when it's free, otherwise any
  * free port, so it never collides with a Postgres you already run.
  */

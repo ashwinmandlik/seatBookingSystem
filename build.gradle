@@ -60,10 +60,22 @@ tasks.named('jar') {
     enabled = false
 }
 
-// Local run without Docker or a database install: ./gradlew dev (app + embedded Postgres).
+// ./gradlew bootRun on a clean clone: with no DATABASE_URL set, a throwaway embedded Postgres 16 starts
+// together with the app (io.seatreserve.dev.LocalDev), so nothing else needs installing. With
+// DATABASE_URL set, bootRun runs the app alone against that database. The Docker image and the live
+// deployment use the built jar, not bootRun, so this changes nothing there.
+tasks.named('bootRun') {
+    if (!System.getenv('DATABASE_URL')) {
+        description = 'Runs the app with a throwaway embedded Postgres 16 (set DATABASE_URL to use your own).'
+        classpath = sourceSets.test.runtimeClasspath
+        mainClass = 'io.seatreserve.dev.LocalDev'
+    }
+}
+
+// Same as bootRun without DATABASE_URL; kept for anyone used to it.
 tasks.register('dev', JavaExec) {
     group = 'application'
-    description = 'Runs the app with a throwaway embedded Postgres 16 (no Docker needed).'
+    description = 'Runs the app with a throwaway embedded Postgres 16 (same as bootRun without DATABASE_URL).'
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'io.seatreserve.dev.LocalDev'
 }
@@ -87,7 +99,7 @@ tasks.register('burst', JavaExec) {
     javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(21) }
 }
 
-// Just the database: ./gradlew devDb (then ./gradlew bootRun in another terminal).
+// Just the database, on localhost:5432: ./gradlew devDb (e.g. to run SeatReserveApplication from an IDE).
 tasks.register('devDb', JavaExec) {
     group = 'application'
     description = 'Runs a throwaway Postgres 16 on localhost:5432 (no Docker needed).'
