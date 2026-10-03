@@ -66,7 +66,7 @@ stops the app and the database, whose data is discarded. To use your own Postgre
 ./gradlew test                 # Windows: .\gradlew.bat test
 ```
 
-The complete suite: 100 tests against **real PostgreSQL 16 and Redis binaries** started in-process, so no Docker
+The complete suite: 102 tests against **real PostgreSQL 16 and Redis binaries** started in-process, so no Docker
 and no database install, on Linux, macOS (Intel or Apple Silicon) and Windows. Same JDK requirement as Option C.
 They include real concurrent races: 1,000 users on one seat, 1,000 identical retries, per-user-limit floods, cancel
 vs reserve, confirm vs expiry, multiple sweepers, and a mixed 100-thread stress test that would surface any deadlock.

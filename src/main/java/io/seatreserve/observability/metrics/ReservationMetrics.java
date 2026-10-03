@@ -6,6 +6,7 @@ import io.micrometer.core.instrument.Timer;
 import io.seatreserve.common.error.DomainException;
 import io.seatreserve.common.error.ErrorCode;
 import io.seatreserve.reservation.service.ReservationDeclines.SeatsUnavailable;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 import org.springframework.stereotype.Component;
@@ -45,6 +46,14 @@ public class ReservationMetrics {
                 .register(registry);
         this.expired = Counter.builder("holds.expired").description("Holds that expired unconfirmed")
                 .register(registry);
+        // Register every decline the reserve path can report, at 0, so each series is exported from startup.
+        // Counters are otherwise created on first use, and a scrape before the first decline would show none.
+        declinedCounter(reason(ErrorCode.SEAT_TAKEN), "cache");
+        for (String reason : List.of(reason(ErrorCode.SEAT_TAKEN), reason(ErrorCode.PER_USER_LIMIT), REPLAY,
+                reason(ErrorCode.IDEMPOTENCY_KEY_REUSED), reason(ErrorCode.UNKNOWN_SEATS),
+                reason(ErrorCode.SHOW_NOT_FOUND))) {
+            declinedCounter(reason, "database");
+        }
     }
 
     public void confirmed() {
@@ -74,12 +83,16 @@ public class ReservationMetrics {
     }
 
     private void declined(String reason, String source) {
-        Counter.builder("reservations.declined")
+        declinedCounter(reason, source).increment();
+    }
+
+    /** reservations_declined_total{reason, source}: two low-cardinality labels, never ids. */
+    private Counter declinedCounter(String reason, String source) {
+        return Counter.builder("reservations.declined")
                 .description("Reserve requests turned away, by reason")
                 .tag("reason", reason)
                 .tag("source", source)
-                .register(registry)   // idempotent: returns the existing counter for these tags
-                .increment();
+                .register(registry);   // idempotent: returns the existing counter for these tags
     }
 
     /**
