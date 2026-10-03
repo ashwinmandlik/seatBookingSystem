@@ -24,10 +24,17 @@ import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactor
 import org.springframework.data.redis.core.StringRedisTemplate;
 import redis.embedded.RedisServer;
 
-/** Runs against a real redis-server process. */
+/**
+ * Runs against a real redis-server process.
+ *
+ * <p>Timings are generous on purpose: a slow CI machine (GitHub's Windows runners) once took longer than a
+ * 200 ms command timeout or a 300 ms entry TTL between a write and the read that checks it, and the cache,
+ * which never throws, quietly skipped the write. Only {@link #entriesExpireOnTheirOwn} uses a short TTL.
+ */
 class RedisSharedSeatCacheTest {
 
-    private static final Duration TTL = Duration.ofMillis(300);
+    private static final Duration TTL = Duration.ofSeconds(30);
+    private static final Duration SHORT_TTL = Duration.ofMillis(300);
     private static final Duration BREAKER = Duration.ofSeconds(5);
 
     private final AtomicLong now = new AtomicLong(1_000_000_000L);
@@ -45,13 +52,17 @@ class RedisSharedSeatCacheTest {
         server.start();
         factory = new LettuceConnectionFactory(new RedisStandaloneConfiguration("localhost", port),
                 LettuceClientConfiguration.builder()
-                        .commandTimeout(Duration.ofMillis(200))
+                        .commandTimeout(Duration.ofSeconds(2))
                         .clientOptions(ClientOptions.builder()
                                 .disconnectedBehavior(DisconnectedBehavior.REJECT_COMMANDS).build())
                         .build());
         factory.afterPropertiesSet();
         factory.start();
         redis = new StringRedisTemplate(factory);
+        // Connect now, so a slow first connection never counts against a test's first command.
+        try (var connection = factory.getConnection()) {
+            connection.ping();
+        }
         cache = new RedisSharedSeatCache(redis, TTL, BREAKER, now::get, new SimpleMeterRegistry());
     }
 
@@ -83,10 +94,12 @@ class RedisSharedSeatCacheTest {
 
     @Test
     void entriesExpireOnTheirOwn() throws InterruptedException {
-        cache.markTaken(show, Map.of("A1", "alice"));
-        Thread.sleep(TTL.toMillis() + 200);
+        RedisSharedSeatCache shortLived = new RedisSharedSeatCache(redis, SHORT_TTL, BREAKER, now::get,
+                new SimpleMeterRegistry());
+        shortLived.markTaken(show, Map.of("A1", "alice"));
+        Thread.sleep(SHORT_TTL.toMillis() + 200);
 
-        assertThat(cache.owners(show, List.of("A1"))).isEmpty();
+        assertThat(shortLived.owners(show, List.of("A1"))).isEmpty();
     }
 
     @Test
@@ -131,7 +144,8 @@ class RedisSharedSeatCacheTest {
 
         server = new RedisServer(port);
         server.start();
-        cache.markTaken(show, Map.of("A1", "alice"));      // skipped: breaker still open
+        awaitReconnected();                                // Redis is reachable again...
+        cache.markTaken(show, Map.of("A1", "alice"));      // ...but skipped: breaker still open
         assertThat(redis.keys("seat:taken:*")).isEmpty();
 
         // Once the breaker window has passed (and Lettuce has reconnected), Redis is used again.
@@ -142,6 +156,22 @@ class RedisSharedSeatCacheTest {
             Thread.sleep(100);
         }
         assertThat(cache.owners(show, List.of("A1"))).containsEntry("A1", "alice");
+    }
+
+    /** After a restart, the client reconnects in the background and rejects commands until it has. */
+    private void awaitReconnected() throws InterruptedException {
+        long deadline = System.nanoTime() + Duration.ofSeconds(15).toNanos();
+        while (true) {
+            try (var connection = factory.getConnection()) {
+                connection.ping();
+                return;
+            } catch (RuntimeException notYet) {
+                if (System.nanoTime() > deadline) {
+                    throw notYet;
+                }
+                Thread.sleep(50);
+            }
+        }
     }
 
     private static int freePort() throws IOException {
