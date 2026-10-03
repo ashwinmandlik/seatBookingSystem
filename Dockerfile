@@ -34,4 +34,8 @@ EXPOSE 8080
 # limping on in a broken state.
 ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError"
 
+# Structured JSON logs (Elastic Common Schema) wherever the image runs: compose,
+# Render, any VM. Outside a container the app logs readable text by default.
+ENV LOG_FORMAT=ecs
+
 ENTRYPOINT ["java", "org.springframework.boot.loader.launch.JarLauncher"]

@@ -47,6 +47,9 @@ dependencies {
 
 tasks.named('test') {
     useJUnitPlatform()
+    // Tests log JSON like the Docker image (production) does, so StructuredLogTest checks the real format.
+    // Logback configures once per JVM, so this has to be set for the whole test run, not per test class.
+    environment 'LOG_FORMAT', 'ecs'
 }
 
 // Produce a single, predictably-named jar for the Dockerfile.
@@ -63,16 +66,6 @@ tasks.register('dev', JavaExec) {
     description = 'Runs the app with a throwaway embedded Postgres 16 (no Docker needed).'
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'io.seatreserve.dev.LocalDev'
-}
-
-// Readable console logs when a person runs the app from Gradle; containers keep
-// JSON (the default) for log pipelines. LOG_FORMAT=ecs ./gradlew dev shows the JSON.
-['dev', 'bootRun'].each { name ->
-    tasks.named(name) {
-        if (!System.getenv('LOG_FORMAT')) {
-            environment 'LOG_FORMAT', ''
-        }
-    }
 }
 
 // Just the database: ./gradlew devDb (then ./gradlew bootRun in another terminal).

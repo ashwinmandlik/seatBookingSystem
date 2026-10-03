@@ -15,6 +15,7 @@ the live URL.
 | Metrics | [`/actuator/prometheus`](https://seat-reserve-lrvt.onrender.com/actuator/prometheus) |
 | Logs | JSON on stdout (Render log viewer); screen recording of live logs under a burst: *(link in submission)* |
 | Burst | `ADMIN_KEY='<admin key>' ./burst.sh https://seat-reserve-lrvt.onrender.com` (see [Run the burst from your laptop](#run-the-burst-from-your-laptop)) |
+| Run it locally | `./gradlew dev` (`.\gradlew dev` on Windows): one command, needs only a JDK. Or `docker compose up --build`. In an IDE, run `LocalDev`. See [Run it](#run-it) |
 | Design write-up | [WRITEUP.md](WRITEUP.md) |
 | Clean-clone CI | [`ci`](.github/workflows/ci.yml) on every push, from a fresh checkout: `./gradlew build` and `./gradlew dev` + the Postman suite on Linux, macOS (Apple Silicon) and Windows; `docker compose up --build`, then the Postman suite, `./burst.sh --wait-for-expiry` with 15 s holds (all 18 checks) and readiness failing closed with Postgres stopped |
 
@@ -78,34 +79,41 @@ no ORM, so the atomic statements are visible) · Micrometer/Prometheus · Docker
 
 ## Run it
 
-**What you need** (plus internet access on the first run, to download dependencies):
+**Quickest way: one command, needs only a JDK (17 or newer).** Clone the repo, then from its folder:
 
-| To… | Install | Everything else |
-|---|---|---|
-| Call the **live URL** | nothing (curl / your load tool) | — |
-| `docker compose up --build` | **Docker** | JDK, Gradle, Postgres and Redis all run in containers. Only port 8080 is published, so a local Postgres on 5432 doesn't conflict |
-| `./gradlew dev` / `build` / `test` | **any JDK 17+** | Gradle downloads itself and, if needed, JDK 21; tests start real Postgres/Redis binaries in-process (Linux, macOS Intel/Apple Silicon, Windows), so no database and no Docker |
-| `./burst.sh <URL>` | **Java 21+ or Docker**, and bash (Git Bash/WSL on Windows) | or `java burst/Burst.java <URL>` from any terminal, including PowerShell; all options in [Burst test](#burst-test) |
+```bash
+./gradlew dev          # macOS, Linux, Git Bash
+.\gradlew dev          # Windows PowerShell or cmd
+```
 
-### With Docker (same as production)
+This starts the app on <http://localhost:8080> together with a throwaway Postgres 16, with nothing else to
+install: Gradle downloads itself and, if needed, JDK 21. When it prints `Seat reserve running on
+http://localhost:8080`, try `curl localhost:8080/health/ready`. The admin key is `local-admin-key`.
+Ctrl+C stops the app and the database; their data is discarded.
+
+**In an IDE** (IntelliJ, Eclipse, VS Code): open the folder as a Gradle project and run
+`io.seatreserve.dev.LocalDev` (in `src/test/java`). It is the same as `./gradlew dev`: app plus embedded
+Postgres in one click. Running `SeatReserveApplication` itself needs a database already running (below); without
+one it stops with a short message listing the ways to start one.
+
+**With Docker**, exactly as deployed (app, Postgres 16 and Redis in containers, JSON logs):
 
 ```bash
 docker compose up --build
-curl localhost:8080/health/ready
 ```
 
-Starts the app, Postgres 16 and (optional) Redis. The admin key is `local-admin-key`.
+**Other options**
 
-### Without Docker (one command)
+| To… | Run | Needs |
+|---|---|---|
+| Use the database separately, e.g. to run `SeatReserveApplication` from an IDE | `./gradlew devDb` (Postgres on localhost:5432), then start the app | a JDK |
+| Use your own Postgres | `DATABASE_URL=postgresql://user:pass@host:5432/db ./gradlew bootRun` | a JDK |
+| Run the tests | `./gradlew test` | a JDK |
+| Call the live URL | curl or any load tool | nothing |
+| Run the burst test | `./burst.sh <URL>`, or `java burst/Burst.java <URL>` | Java 21+ or Docker ([Burst test](#burst-test)) |
 
-```bash
-./gradlew dev        # app on :8080 + a throwaway embedded Postgres 16; Ctrl+C stops both
-```
-
-Needs only a JDK (17+). The admin key is `local-admin-key`. Logs are plain text here; containers log JSON
-(`LOG_FORMAT=ecs ./gradlew dev` shows the JSON). To run the database separately: `./gradlew devDb`, then
-`./gradlew bootRun` in another terminal. To use your own Postgres: `DATABASE_URL=… ./gradlew bootRun`. Plain `./gradlew bootRun` with no database
-stops with a short message listing these options.
+Logs are readable text when run locally and JSON inside the Docker image (`LOG_FORMAT=ecs` shows JSON locally).
+Only port 8080 is published by docker compose, so a Postgres you already run on 5432 doesn't conflict.
 
 ### Tests
 
@@ -113,7 +121,7 @@ stops with a short message listing these options.
 ./gradlew test
 ```
 
-Over 100 tests run against **real PostgreSQL 16 and Redis binaries** started in-process. No Docker is needed, so
+The 100 tests run against **real PostgreSQL 16 and Redis binaries** started in-process. No Docker is needed, so
 they run the same on Linux, macOS (Intel or Apple Silicon) and Windows. They include real concurrent races:
 1000 users on one seat, 1000 identical retries, per-user-limit floods, cancel vs reserve, confirm vs
 expiry, multiple sweepers, and a mixed 100-thread stress test that would surface any deadlock.
@@ -273,7 +281,8 @@ mistaken for a dead database) and returns **503, failing closed**, when it's unr
 
 Counters are incremented only **after commit**, so they reconcile exactly with what the API answered (the burst checks this).
 
-**Logs:** JSON (Elastic Common Schema) on stdout. Every line carries `request_id` and, once authenticated, `user_id`, and every request
+**Logs:** JSON (Elastic Common Schema) on stdout on the live service and anywhere the Docker image runs (it sets
+`LOG_FORMAT=ecs`); plain text when run locally with `./gradlew dev` or from an IDE. Every line carries `request_id` and, once authenticated, `user_id`, and every request
 ends with one access line showing its outcome:
 ```json
 {"log":{"level":"INFO","logger":"access"},"message":"POST /shows/…/reserve -> 409","request_id":"…",
@@ -571,7 +580,7 @@ deployment is Render.)
 | `HOT_SEATS_MAX_ENTRIES` | `500000` | cap on cached taken seats (Render: `100000`, ~20 MB) |
 | `REDIS_ENABLED` / `REDIS_URL` | `false` / `redis://localhost:6379` | optional shared cache |
 | `SERVER_MAX_CONNECTIONS` / `SERVER_ACCEPT_COUNT` | `20000` / `2000` | Tomcat connection limits |
-| `LOG_FORMAT` | `ecs` | or `logstash` |
+| `LOG_FORMAT` | text (the Docker image sets `ecs`) | `ecs` for JSON, or `logstash` |
 
 ---
 

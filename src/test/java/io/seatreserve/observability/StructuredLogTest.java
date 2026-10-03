@@ -17,7 +17,10 @@ import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
-/** Logs are JSON (ECS) and every line of a request carries its request id and the token's user id. */
+/**
+ * Logs are JSON (ECS) and every line of a request carries its request id and the token's user id.
+ * JSON is the Docker image's format; the test task sets LOG_FORMAT=ecs (see build.gradle).
+ */
 @AutoConfigureMockMvc
 @ExtendWith(OutputCaptureExtension.class)
 class StructuredLogTest extends IntegrationTest {
