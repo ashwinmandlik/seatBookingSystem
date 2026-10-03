@@ -324,7 +324,7 @@ reverse.
 
 2. **Any terminal with Java 21+**: PowerShell, cmd, bash, zsh. From the repo folder:
    ```powershell
-   # PowerShell, bash, zsh  (in Windows cmd, put the key in double quotes)
+   # PowerShell, bash, zsh, cmd
    java burst/Burst.java https://seat-reserve-lrvt.onrender.com --scale 4 --admin-key '<admin key>'
    ```
 

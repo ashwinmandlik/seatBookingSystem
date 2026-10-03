@@ -51,7 +51,7 @@ public class Burst {
     // ------------------------------------------------------------------ config
 
     static String base;
-    static String adminKey = env("ADMIN_KEY", "local-admin-key");
+    static String adminKey = unquote(env("ADMIN_KEY", "local-admin-key"));
     static int scale = 1;
     static int concurrency = 2000;
     static boolean concurrencySet = false;
@@ -812,7 +812,8 @@ public class Burst {
                 admin ? Map.of("X-Admin-Key", adminKey) : Map.of());
         if (h.status != 200) {
             fail("Could not get a " + (admin ? "admin " : "") + "token: " + h.status + " " + h.body
-                    + (admin ? "  (set ADMIN_KEY or pass --admin-key)" : ""));
+                    + (admin ? "  (set ADMIN_KEY or pass --admin-key; the live service needs its own key, a local"
+                            + " run uses local-admin-key)" : ""));
         }
         return str(h.body, "access_token");
     }
@@ -966,7 +967,7 @@ public class Burst {
                     concurrency = Integer.parseInt(args[++i]);
                     concurrencySet = true;
                 }
-                case "--admin-key" -> adminKey = args[++i];
+                case "--admin-key" -> adminKey = unquote(args[++i]);
                 case "--timeout" -> REQUEST_TIMEOUT = Duration.ofSeconds(Long.parseLong(args[++i]));
                 case "--wait-for-expiry" -> waitForExpiry = true;
                 default -> {
@@ -975,6 +976,20 @@ public class Burst {
                 }
             }
         }
+    }
+
+    /**
+     * Drops one pair of surrounding quotes. Windows cmd doesn't treat '…' as quoting, so
+     * --admin-key 'abc' arrives with the quotes as part of the key and the server answers 403.
+     */
+    static String unquote(String value) {
+        if (value != null && value.length() >= 2) {
+            char first = value.charAt(0), last = value.charAt(value.length() - 1);
+            if ((first == '\'' || first == '"') && first == last) {
+                return value.substring(1, value.length() - 1);
+            }
+        }
+        return value;
     }
 
     static boolean isLocalTarget() {
