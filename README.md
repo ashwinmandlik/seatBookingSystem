@@ -43,8 +43,10 @@ don't quote anything in cmd.)
   free instance. Add `--scale 4` for about 23,500 requests (4–5 minutes).
 - It ends with the outcome counts, a reconciliation against the server, and a list of checks. Success is
   `RESULT: PASS`, exit code `0`.
-- No Java 21? `./burst.sh` uses Docker automatically. On Windows without Java or bash, see
-  [all the ways to run it](#burst-test) (including running it without cloning).
+- Only an older JDK (17+)? Use Gradle, which fetches JDK 21 by itself:
+  `./gradlew -q burst "--args=https://seat-reserve-lrvt.onrender.com --admin-key <admin key>"`
+  (`.\gradlew` on Windows). No Java at all? `./burst.sh` uses Docker automatically. More options in
+  [all the ways to run it](#burst-test), including running it without cloning.
 
 ### For reviewers: pointing your own load tool at it
 
@@ -114,7 +116,7 @@ docker compose up --build
 | Use your own Postgres | `DATABASE_URL=postgresql://user:pass@host:5432/db ./gradlew bootRun` | a JDK |
 | Run the tests | `./gradlew test` | a JDK |
 | Call the live URL | curl or any load tool | nothing |
-| Run the burst test | `./burst.sh <URL>`, or `java burst/Burst.java <URL>` | Java 21+ or Docker ([Burst test](#burst-test)) |
+| Run the burst test | `./gradlew -q burst "--args=<URL>"`, `./burst.sh <URL>`, or `java burst/Burst.java <URL>` | a JDK 17+ for Gradle, Java 21+ for `java`, or Docker ([Burst test](#burst-test)) |
 
 Logs are readable text when run locally and JSON inside the Docker image (`LOG_FORMAT=ecs` shows JSON locally).
 Only port 8080 is published by docker compose, so a Postgres you already run on 5432 doesn't conflict.
@@ -331,6 +333,19 @@ reverse. The admin key goes in double quotes in every shell.
    # PowerShell, bash, zsh, cmd
    java burst/Burst.java https://seat-reserve-lrvt.onrender.com --scale 4 --admin-key "<admin key>"
    ```
+
+   **Only an older JDK (17+)?** Run it through Gradle, which downloads JDK 21 if needed (the same as `./gradlew dev`).
+   Everything after `--args=` is passed to the burst; keep it in one pair of double quotes:
+   ```bash
+   # bash
+   ./gradlew -q burst "--args=https://seat-reserve-lrvt.onrender.com --scale 4 --admin-key <admin key>"
+   ```
+   ```powershell
+   # PowerShell or cmd
+   .\gradlew -q burst "--args=https://seat-reserve-lrvt.onrender.com --scale 4 --admin-key <admin key>"
+   ```
+   Through Gradle the live seat counts print every 5 s instead of updating in place, and a failed run also ends with
+   Gradle's "BUILD FAILED".
 
 3. **From any folder:** give the file's full path, replacing `<repo>` with wherever you cloned it.
    ```bash

@@ -68,6 +68,25 @@ tasks.register('dev', JavaExec) {
     mainClass = 'io.seatreserve.dev.LocalDev'
 }
 
+// The burst test on the project's JDK 21 (downloaded if missing), so any JDK that runs Gradle (17+) can run it:
+//   ./gradlew -q burst "--args=http://localhost:8080"
+// Same program as ./burst.sh and java burst/Burst.java. Compiled into its own folder, only when this task runs.
+def compileBurst = tasks.register('compileBurst', JavaCompile) {
+    description = 'Compiles burst/Burst.java (a standalone file, not part of the app).'
+    source = fileTree('burst') { include 'Burst.java' }
+    classpath = files()
+    destinationDirectory = layout.buildDirectory.dir('burst-classes')
+    javaCompiler = javaToolchains.compilerFor { languageVersion = JavaLanguageVersion.of(21) }
+}
+tasks.register('burst', JavaExec) {
+    group = 'application'
+    description = 'Runs the burst test: ./gradlew -q burst "--args=<BASE_URL> [options]"'
+    dependsOn compileBurst
+    classpath = files(compileBurst.flatMap { it.destinationDirectory })
+    mainClass = 'Burst'
+    javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(21) }
+}
+
 // Just the database: ./gradlew devDb (then ./gradlew bootRun in another terminal).
 tasks.register('devDb', JavaExec) {
     group = 'application'
